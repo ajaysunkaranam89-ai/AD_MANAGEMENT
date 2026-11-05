@@ -21,6 +21,9 @@ export const config = {
   port: Number(process.env.PORT || 3200),
   httpsCert: process.env.HTTPS_CERT_FILE || '',
   httpsKey: process.env.HTTPS_KEY_FILE || '',
+  httpsPfx: process.env.HTTPS_PFX_FILE || '', // alternative: one .pfx file (e.g. exported from Windows)
+  httpsPfxPassphrase: process.env.HTTPS_PFX_PASSPHRASE || '',
+  httpRedirectPort: Number(process.env.HTTP_REDIRECT_PORT || 0), // optional: redirect plain HTTP to HTTPS
   trustProxy: bool(process.env.TRUST_PROXY, false),
   sessionTimeoutMinutes: Number(process.env.SESSION_TIMEOUT_MINUTES || 30),
 
@@ -45,6 +48,39 @@ export const config = {
   helpdeskPermissions: null, // null = defaults from roles.js
 
   branding: { orgName: process.env.ORG_NAME || '', logo: '' },
+
+  security: {
+    maxFailuresPerUser: 2, // portal stops before AD's lockout threshold
+    sessionMaxHours: 8, // absolute session lifetime
+    roleRecheckMinutes: 5, // re-check portal group membership during a session
+    requireMfa: false,
+    ipAllowlist: [], // IPs / CIDRs allowed to reach the portal (empty = any)
+    excludedOUs: [], // never managed, even inside a managed OU
+    reauthForSettings: true,
+    syslogHost: '', // copy audit events to a SIEM / syslog server
+    syslogPort: 514,
+    syslogProtocol: 'udp',
+    eventLog: false, // copy audit events to the Windows Application log
+  },
+
+  notifications: {
+    enabled: false,
+    smtpHost: '', smtpPort: 587, smtpSecure: false, smtpUser: '', smtpPassword: '', from: '',
+    itMailbox: '', // receives every notification
+    notifyManager: true, // also e-mail the user's manager when one is set
+    events: ['user.create', 'user.resetPassword', 'user.unlock', 'user.enable', 'user.offboard', 'user.delete'],
+  },
+
+  workflow: {
+    leaverOU: '', // offboarding moves the account here
+    approvalActions: [], // actions that need a second admin, e.g. ['user.delete', 'group.delete']
+  },
+
+  backup: {
+    enabled: false,
+    folder: '',
+    keep: 14, // number of daily backups to keep
+  },
 
   provisioning: {
     upnSuffixes: [],
@@ -78,6 +114,15 @@ export function applySettings(s) {
   config.upnSuffix = s.provisioning.upnSuffix;
   config.provisioning = { ...config.provisioning, ...s.provisioning };
   config.sessionTimeoutMinutes = s.session?.timeoutMinutes || config.sessionTimeoutMinutes;
+  applyCommon(s);
+}
+
+// Options that also apply in demo mode (no real directory involved)
+export function applyCommon(s) {
+  config.security = { ...config.security, ...(s.security || {}) };
+  config.notifications = { ...config.notifications, ...(s.notifications || {}) };
+  config.workflow = { ...config.workflow, ...(s.workflow || {}) };
+  config.backup = { ...config.backup, ...(s.backup || {}) };
 }
 
 export function isConfigured() {

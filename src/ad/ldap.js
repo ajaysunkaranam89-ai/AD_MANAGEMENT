@@ -11,9 +11,13 @@ import {
 const USER_ATTRS = [
   'distinguishedName', 'sAMAccountName', 'userPrincipalName', 'cn', 'adminCount', 'isCriticalSystemObject',
   'userAccountControl', 'lockoutTime', 'pwdLastSet', 'lastLogonTimestamp', 'whenCreated', 'whenChanged',
-  'accountExpires', 'msDS-User-Account-Control-Computed', ...Object.values(USER_FIELDS),
+  'accountExpires', 'msDS-User-Account-Control-Computed', 'servicePrincipalName', 'manager', ...Object.values(USER_FIELDS),
 ];
 const MAX_RESULTS = 5000;
+
+// Managed = inside a managed OU and not inside an excluded OU (Settings -> Security)
+const excluded = (dn) => inScope(dn, config.security?.excludedOUs || []);
+const managedIn = (dn, ous) => inScope(dn, ous) && !excluded(dn);
 const GROUP_ATTRS = [
   'distinguishedName', 'sAMAccountName', 'cn', 'description', 'info', 'mail', 'groupType',
   'adminCount', 'isCriticalSystemObject', 'whenCreated', 'whenChanged',
@@ -146,6 +150,10 @@ function shapeUser(e, computed) {
     created: genTimeToIso(e.whenCreated),
     changed: genTimeToIso(e.whenChanged),
     protected: isProtected(e),
+    // service-like accounts: changing them can break applications
+    // (disabled accounts with a never-expiring password are usually old leavers, not services)
+    serviceAccount: arr(e.servicePrincipalName).length > 0 || (!!(uac & UAC.DONT_EXPIRE_PASSWORD) && !(uac & UAC.ACCOUNTDISABLE)),
+    manager: one(e.manager) || '',
   };
   for (const [k, attr] of Object.entries(USER_FIELDS)) out[k] = one(e[attr]) || '';
   if (!out.displayName) out.displayName = one(e.cn) || out.sam;
@@ -167,13 +175,20 @@ function shapeGroup(e) {
     created: genTimeToIso(e.whenCreated),
     changed: genTimeToIso(e.whenChanged),
     protected: isProtected(e),
-    manageable: inScope(e.dn, config.groupOUs) && !isProtected(e),
+    manageable: managedIn(e.dn, config.groupOUs) && !isProtected(e),
   };
 }
 
 // ---------------------------------------------------------------- lookups
 
 const USER_CLASS = '(objectCategory=person)(objectClass=user)';
+
+// "YYYY-MM-DD" = last working day -> AD accountExpires (start of the next day, server local time)
+function dateToFileTime(date) {
+  const [y, m, d] = date.split('-').map(Number);
+  const ms = new Date(y, m - 1, d + 1, 0, 0, 0).getTime();
+  return String((BigInt(ms) + 11644473600000n) * 10000n);
+}
 
 // Search text -> LDAP filter part: each word (max 5) must appear in at least one attribute
 function wordsFilter(q, attrs) {
@@ -185,7 +200,7 @@ async function findUser(c, sam, { anywhere = false } = {}) {
   const f = `(&${USER_CLASS}(sAMAccountName=${escapeFilter(sam)}))`;
   const found = await search(c, config.ldap.baseDn, f, USER_ATTRS);
   const e = found[0];
-  if (!e || (!anywhere && !inScope(e.dn, config.userOUs))) throw new AdError(404, `User "${sam}" was not found in the OUs this portal manages.`);
+  if (!e || (!anywhere && !managedIn(e.dn, config.userOUs))) throw new AdError(404, `User "${sam}" was not found in the OUs this portal manages.`);
   return e;
 }
 
@@ -201,12 +216,12 @@ function assertWritableUser(e) {
 }
 
 function assertWritableGroup(e) {
-  if (!inScope(e.dn, config.groupOUs)) throw new AdError(403, `Group "${one(e.sAMAccountName)}" is outside the OUs this portal manages.`);
+  if (!managedIn(e.dn, config.groupOUs)) throw new AdError(403, `Group "${one(e.sAMAccountName)}" is outside the OUs this portal manages.`);
   if (isProtected(e)) throw new AdError(403, PROTECTED_MSG);
 }
 
 function assertOu(ou, ous, kind) {
-  if (!ou || !inScope(ou, ous)) throw new AdError(400, `Choose a valid ${kind} OU managed by this portal.`);
+  if (!ou || !managedIn(ou, ous)) throw new AdError(400, `Choose a valid ${kind} OU managed by this portal.`);
 }
 
 async function samTaken(c, sam) {
@@ -260,7 +275,7 @@ export const directory = {
     return withService(async (c) => {
       const load = async (roots) => {
         const items = await searchMany(c, roots, '(|(objectClass=organizationalUnit)(&(objectClass=container)(cn=Users)))', ['distinguishedName', 'ou']);
-        return items.map((e) => ({ dn: e.dn, name: e.dn.split(/,DC=/i)[0] })).sort((a, b) => a.name.localeCompare(b.name));
+        return items.filter((e) => !excluded(e.dn)).map((e) => ({ dn: e.dn, name: e.dn.split(/,DC=/i)[0] })).sort((a, b) => a.name.localeCompare(b.name));
       };
       return { userOUs: await load(config.userOUs), groupOUs: await load(config.groupOUs) };
     });
@@ -275,7 +290,7 @@ export const directory = {
       if (status === 'disabled') f += '(userAccountControl:1.2.840.113556.1.4.803:=2)';
       if (status === 'enabled') f += '(!(userAccountControl:1.2.840.113556.1.4.803:=2))';
       if (status === 'locked') f += '(lockoutTime>=1)'; // candidates; real state checked below
-      let all = (await searchMany(c, config.userOUs, `(&${f})`, USER_ATTRS)).map((x) => shapeUser(x));
+      let all = (await searchMany(c, config.userOUs, `(&${f})`, USER_ATTRS)).filter((x) => !excluded(x.dn)).map((x) => shapeUser(x));
       if (status === 'locked') all = all.filter((u) => u.locked);
       all.sort((a, b) => a.displayName.localeCompare(b.displayName));
       return { items: all.slice(0, MAX_RESULTS), total: all.length, truncated: all.length > MAX_RESULTS };
@@ -290,6 +305,10 @@ export const directory = {
       const user = shapeUser(e, one(comp?.['msDS-User-Account-Control-Computed']));
       const groups = await search(c, config.ldap.baseDn, `(&(objectClass=group)(member=${escapeFilter(e.dn)}))`, GROUP_ATTRS);
       user.groups = groups.map(shapeGroup).sort((a, b) => a.name.localeCompare(b.name));
+      if (user.manager) {
+        const mgr = (await search(c, user.manager, '(objectClass=*)', ['sAMAccountName', 'displayName', 'mail'], { scope: 'base' }).catch(() => []))[0];
+        user.managerInfo = mgr ? { sam: one(mgr.sAMAccountName), name: one(mgr.displayName) || rdnValue(user.manager), mail: one(mgr.mail) || '' } : { name: rdnValue(user.manager) };
+      }
       return user;
     });
   },
@@ -309,6 +328,8 @@ export const directory = {
         userAccountControl: String(UAC.NORMAL_ACCOUNT | UAC.ACCOUNTDISABLE),
       };
       for (const [k, attr] of Object.entries(USER_FIELDS)) if (d[k] && k !== 'displayName') entry[attr] = d[k];
+      if (d.accountExpires) entry.accountExpires = dateToFileTime(d.accountExpires);
+      if (d.manager) entry.manager = (await findUser(c, d.manager, { anywhere: true })).dn;
       await c.add(dn, entry);
 
       try {
@@ -336,12 +357,26 @@ export const directory = {
     });
   },
 
-  async updateUser(sam, fields) {
+  async updateUser(sam, fields, extra = {}) {
     return withService(async (c) => {
       const e = await findUser(c, sam);
       assertWritableUser(e);
       const changes = [];
       const before = {};
+      if (extra.accountExpires !== undefined) {
+        const next = extra.accountExpires ? dateToFileTime(extra.accountExpires) : '0';
+        if (String(one(e.accountExpires) || '0') !== next) {
+          before.accountExpires = fileTimeToIso(e.accountExpires) || 'never';
+          changes.push(replace('accountExpires', next));
+        }
+      }
+      if (extra.manager !== undefined) {
+        const next = extra.manager ? (await findUser(c, extra.manager, { anywhere: true })).dn : '';
+        if (normDn(one(e.manager) || '') !== normDn(next)) {
+          before.manager = one(e.manager) || '';
+          changes.push(next ? replace('manager', next) : new Change({ operation: 'replace', modification: new Attribute({ type: 'manager', values: [] }) }));
+        }
+      }
       for (const [k, v] of Object.entries(fields)) {
         const attr = USER_FIELDS[k];
         const old = one(e[attr]) || '';
@@ -414,7 +449,7 @@ export const directory = {
   async searchGroups(q) {
     return withService(async (c) => {
       const f = '(objectClass=group)' + wordsFilter(q, ['sAMAccountName', 'cn', 'description']);
-      const all = (await searchMany(c, config.groupOUs, `(&${f})`, GROUP_ATTRS)).map(shapeGroup);
+      const all = (await searchMany(c, config.groupOUs, `(&${f})`, GROUP_ATTRS)).filter((x) => !excluded(x.dn)).map(shapeGroup);
       all.sort((a, b) => a.name.localeCompare(b.name));
       return { items: all.slice(0, MAX_RESULTS), total: all.length, truncated: all.length > MAX_RESULTS };
     });
@@ -423,7 +458,7 @@ export const directory = {
   async getGroup(sam) {
     return withService(async (c) => {
       const e = await findGroup(c, sam);
-      if (!inScope(e.dn, config.groupOUs)) throw new AdError(404, `Group "${sam}" is outside the OUs this portal manages.`);
+      if (!managedIn(e.dn, config.groupOUs)) throw new AdError(404, `Group "${sam}" is outside the OUs this portal manages.`);
       const g = shapeGroup(e);
       const members = await search(c, config.ldap.baseDn, `(memberOf=${escapeFilter(e.dn)})`,
         ['distinguishedName', 'sAMAccountName', 'displayName', 'cn', 'objectClass', 'userAccountControl']);
@@ -436,7 +471,7 @@ export const directory = {
           name: one(m.displayName) || one(m.cn) || rdnValue(m.dn),
           kind,
           enabled: kind === 'group' ? true : !(Number(one(m.userAccountControl) || 0) & UAC.ACCOUNTDISABLE),
-          inScope: inScope(m.dn, kind === 'group' ? config.groupOUs : config.userOUs),
+          inScope: managedIn(m.dn, kind === 'group' ? config.groupOUs : config.userOUs),
         };
       }).sort((a, b) => a.name.localeCompare(b.name));
       return g;

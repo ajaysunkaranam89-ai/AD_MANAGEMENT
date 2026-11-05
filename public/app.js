@@ -28,6 +28,8 @@ const ICONS = {
   groups: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="11" r="2.3"/><circle cx="15" cy="11" r="2.3"/><path d="M5.5 17.5c.8-2 2-3 3.5-3s2.7 1 3.5 3M11.5 17.5c.8-2 2-3 3.5-3s2.7 1 3.5 3"/></svg>',
   audit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5M10 12h6M10 15.5h6M10 19h4"/><path d="M4 6v15h3"/></svg>',
   dashboard: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="8" height="9" rx="1.5"/><rect x="13" y="3" width="8" height="5" rx="1.5"/><rect x="13" y="10" width="8" height="11" rx="1.5"/><rect x="3" y="14" width="8" height="7" rx="1.5"/></svg>',
+  reports: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>',
+  approvals: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9"/></svg>',
   settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
 };
 const icon = (name) => { const s = h('span', { 'aria-hidden': 'true' }); s.innerHTML = ICONS[name]; return s.firstChild; };
@@ -114,7 +116,7 @@ async function api(method, url, body, extraHeaders = {}) {
     renderSetup();
     throw new Error(data.error);
   }
-  if (res.status === 401 && url !== '/api/login') {
+  if (res.status === 401 && !url.startsWith('/api/login')) {
     state.me = null;
     renderLogin('Your session has expired. Please sign in again.');
     throw new Error('Session expired');
@@ -272,10 +274,9 @@ function renderLogin(message) {
       err.hidden = true;
       btn.disabled = true; btn.textContent = 'Signing in…';
       try {
-        await api('POST', '/api/login', { username: user.value, password: pass.value });
-        state.me = await api('GET', '/api/me');
-        renderShell();
-        if (!location.hash) location.hash = '#/dashboard'; else route();
+        const r = await api('POST', '/api/login', { username: user.value, password: pass.value });
+        if (r.mfa) { pass.value = ''; showMfaStep(r); return; }
+        await finishLogin();
       } catch (ex) {
         err.textContent = ex.message; err.hidden = false; pass.value = ''; pass.focus();
       } finally { btn.disabled = false; btn.textContent = 'Sign in'; }
@@ -298,18 +299,55 @@ function renderLogin(message) {
       state.mock && h('div', { class: 'hint' }, h('b', {}, 'Demo mode. '), 'No real AD is connected. Sign in as ', h('b', {}, 'portal.admin'), ' (admin) or ', h('b', {}, 'helpdesk'), ' with password ', h('b', {}, 'Demo@1234'), '.')),
     poweredBy()));
   setTimeout(() => user.focus(), 30);
+
+  // Second step: code from an authenticator app (Microsoft / Google Authenticator etc.)
+  function showMfaStep(r) {
+    const code = h('input', { type: 'text', id: 'mfa-code', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: 6, placeholder: '6-digit code', class: 'mono', style: 'font-size:18px;letter-spacing:.2em;text-align:center' });
+    const err2 = h('div', { class: 'error-box', hidden: true });
+    const go = h('button', { class: 'btn primary', type: 'submit', style: 'width:100%' }, r.mfa === 'enroll' ? 'Confirm and sign in' : 'Verify');
+    const enroll = r.mfa === 'enroll' && h('div', { class: 'mfa-enroll' },
+      h('p', {}, h('b', {}, 'Set up two-step sign-in. '), 'Scan this QR code with an authenticator app (Microsoft Authenticator, Google Authenticator…), then enter the 6-digit code it shows.'),
+      h('img', { src: `data:image/svg+xml;base64,${btoa(r.qr)}`, alt: 'QR code for the authenticator app', class: 'mfa-qr' }),
+      h('details', {}, h('summary', {}, "Can't scan? Enter this key instead"), h('div', { class: 'mono', style: 'word-break:break-all;margin-top:6px' }, r.secret.replace(/(.{4})/g, '$1 ').trim())));
+    form.replaceChildren(
+      err2,
+      enroll || h('p', { style: 'margin-top:0' }, 'Enter the 6-digit code from your authenticator app.'),
+      h('div', { class: 'field' }, h('label', { for: 'mfa-code' }, 'Verification code'), code),
+      go,
+      h('div', { style: 'text-align:center;margin-top:10px' }, h('a', { href: '#', onclick: (e) => { e.preventDefault(); renderLogin(); } }, 'Start again')));
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      err2.hidden = true; go.disabled = true;
+      try {
+        await api('POST', '/api/login/mfa', { code: code.value });
+        await finishLogin();
+      } catch (ex) {
+        if (/start again/i.test(ex.message)) return renderLogin(ex.message);
+        err2.textContent = ex.message; err2.hidden = false; code.value = ''; code.focus();
+      } finally { go.disabled = false; }
+    };
+    setTimeout(() => code.focus(), 30);
+  }
 }
 
-const SECTION_TITLES = { dashboard: 'Dashboard', users: 'Users', groups: 'Groups', audit: 'Audit log', settings: 'Settings' };
+async function finishLogin() {
+  state.me = await api('GET', '/api/me');
+  renderShell();
+  if (!location.hash) location.hash = '#/dashboard'; else route();
+}
+
+const SECTION_TITLES = { dashboard: 'Dashboard', users: 'Users', groups: 'Groups', reports: 'Reports', approvals: 'Approvals', audit: 'Audit log', settings: 'Settings' };
 
 function renderShell() {
-  const navLink = (n) => h('a', { href: n.href, 'data-nav': n.href }, icon(n.ic), h('span', { class: 'hide-sm' }, n.label));
+  const navLink = (n) => h('a', { href: n.href, 'data-nav': n.href }, icon(n.ic), h('span', { class: 'hide-sm' }, n.label), n.badge ? h('span', { class: 'nav-badge' }, String(n.badge)) : null);
   const directory = [
     { href: '#/dashboard', label: 'Dashboard', ic: 'dashboard', show: can('user.read') },
     { href: '#/users', label: 'Users', ic: 'users', show: can('user.read') },
     { href: '#/groups', label: 'Groups', ic: 'groups', show: can('group.read') },
+    { href: '#/reports', label: 'Reports', ic: 'reports', show: can('reports.read') },
   ].filter((n) => n.show);
   const admin = [
+    { href: '#/approvals', label: 'Approvals', ic: 'approvals', show: can('approvals.approve') || (state.me.approvalActions || []).length > 0, badge: state.me.pendingApprovals },
     { href: '#/audit', label: 'Audit log', ic: 'audit', show: can('audit.read') },
     { href: '#/settings', label: 'Settings', ic: 'settings', show: can('settings.manage') },
   ].filter((n) => n.show);
@@ -322,7 +360,7 @@ function renderShell() {
       h('nav', { class: 'nav' },
         h('div', { class: 'nav-label' }, 'Directory'), directory.map(navLink),
         admin.length ? [h('div', { class: 'nav-label' }, 'Administration'), admin.map(navLink)] : null),
-      h('div', { class: 'side-foot' }, 'AD Admin Portal v1.0', h('br'), 'Powered by ', h('b', {}, 'Piersoft'))),
+      h('div', { class: 'side-foot' }, 'AD Admin Portal v1.1', h('br'), 'Powered by ', h('b', {}, 'Piersoft'))),
     h('div', { class: 'content' },
       h('header', { class: 'topbar' },
         h('div', { class: 'crumb' },
@@ -421,8 +459,11 @@ function route() {
   }
   if (section === 'audit' && can('audit.read')) return renderAudit(view);
   if (section === 'settings' && can('settings.manage')) return renderSettingsPage(view);
+  if (section === 'reports' && can('reports.read')) return renderReports(view);
+  if (section === 'approvals') return renderApprovals(view);
   if (section !== 'users') { location.hash = can('user.read') ? '#/dashboard' : '#/users'; return; }
   if (id === 'new' && can('user.create')) return renderNewUser(view);
+  if (id === 'import' && can('user.import')) return renderImport(view);
   return renderUsers(view, id);
 }
 
@@ -445,6 +486,8 @@ function statusBadges(u) {
     u.passwordExpired && h('span', { class: 'badge warn' }, 'Password expired'),
     u.mustChangePassword && h('span', { class: 'badge warn' }, 'Must change password'),
     u.protected && h('span', { class: 'badge info' }, 'Protected'),
+    !u.protected && u.serviceAccount && h('span', { class: 'badge off' }, 'Service'),
+    u.accountExpires && new Date(u.accountExpires) <= new Date() && h('span', { class: 'badge danger' }, 'Expired'),
   ];
 }
 
@@ -456,14 +499,35 @@ async function renderUsers(view, selected) {
   const listBox = h('div', { class: 'card table-wrap' }, h('div', { class: 'loading' }, 'Loading users…'));
   const detailBox = h('div', {});
   const split = h('div', { class: `split ${selected ? '' : 'no-detail'}` }, listBox, detailBox);
+  const picked = new Set(); // selected usernames for bulk actions
+  const bulkBar = h('div', { class: 'bulk-bar', hidden: true });
 
   view.replaceChildren(
     h('div', { class: 'page-head' },
       h('h2', {}, 'Users', count),
-      can('user.create') && h('a', { class: 'btn primary', href: '#/users/new' }, '+ New user')),
+      h('div', { class: 'input-row' },
+        can('user.import') && can('user.create') && h('a', { class: 'btn', href: '#/users/import' }, 'Import CSV'),
+        can('user.create') && h('a', { class: 'btn primary', href: '#/users/new' }, '+ New user'))),
     h('div', { class: 'toolbar' }, search, status,
       h('button', { class: 'btn', onclick: () => load(true) }, 'Refresh')),
+    bulkBar,
     split);
+
+  const bulkActions = [
+    { kind: 'unlock', label: 'Unlock', perm: 'user.unlock' },
+    { kind: 'enable', label: 'Enable', perm: 'user.enable' },
+    { kind: 'disable', label: 'Disable', perm: 'user.enable', danger: true },
+    { kind: 'move', label: 'Move…', perm: 'user.move' },
+    { kind: 'offboard', label: 'Offboard…', perm: 'user.offboard', danger: true },
+  ].filter((a) => can(a.perm));
+
+  function drawBulk() {
+    bulkBar.hidden = picked.size === 0 || !bulkActions.length;
+    bulkBar.replaceChildren(
+      h('b', {}, `${picked.size} selected`),
+      ...bulkActions.map((a) => h('button', { class: `btn small ${a.danger ? 'danger' : ''}`, onclick: () => bulkDialog(a, [...picked], async () => { picked.clear(); drawBulk(); await load(true); }) }, a.label)),
+      h('button', { class: 'btn small ghost', onclick: () => { picked.clear(); drawBulk(); drawList(); } }, 'Clear selection'));
+  }
 
   let seq = 0;
   async function load(force) {
@@ -485,30 +549,84 @@ async function renderUsers(view, selected) {
     const { items, total, truncated } = state.users;
     count.textContent = truncated ? `${items.length} of ${total} (refine your search)` : `${total}`;
     if (!items.length) { listBox.replaceChildren(h('div', { class: 'empty' }, 'No users match your search.')); return; }
+    const selectable = items.filter((u) => !u.protected);
+    const all = h('input', { type: 'checkbox', title: 'Select all shown', checked: selectable.length > 0 && selectable.every((u) => picked.has(u.sam)) });
+    all.addEventListener('change', () => { selectable.forEach((u) => (all.checked ? picked.add(u.sam) : picked.delete(u.sam))); drawBulk(); drawList(); });
     listBox.replaceChildren(h('table', {},
-      h('thead', {}, h('tr', {}, h('th', {}, 'Name'), h('th', { class: 'hide-sm' }, 'Title / Department'), h('th', { class: 'hide-sm' }, 'OU'), h('th', {}, 'Status'))),
-      h('tbody', {}, items.map((u) => h('tr', {
-        class: `clickable ${selected && u.sam.toLowerCase() === selected.toLowerCase() ? 'selected' : ''}`,
-        onclick: () => { location.hash = `#/users/${encodeURIComponent(u.sam)}`; },
-      },
-      h('td', {}, h('div', {}, u.displayName), h('div', { class: 'sub' }, u.sam)),
-      h('td', { class: 'hide-sm' }, h('div', {}, u.title || '—'), h('div', { class: 'sub' }, u.department)),
-      h('td', { class: 'hide-sm' }, h('span', { class: 'sub' }, ouLabel(u.ou))),
-      h('td', {}, h('div', { class: 'badges' }, statusBadges(u),
-        u.locked && can('user.unlock') && h('button', {
-          class: 'btn small',
-          async onclick(e) {
-            e.stopPropagation();
-            e.target.disabled = true;
-            try { await api('POST', `/api/users/${encodeURIComponent(u.sam)}/unlock`); toast(`${u.displayName} unlocked`, 'success'); await load(true); if (selected) renderUserDetail(detailBox, selected, () => load(true)); } catch (ex) { toast(ex.message, 'error'); e.target.disabled = false; }
-          },
-        }, 'Unlock'))))))));
+      h('thead', {}, h('tr', {}, bulkActions.length ? h('th', { class: 'cb' }, all) : null, h('th', {}, 'Name'), h('th', { class: 'hide-sm' }, 'Title / Department'), h('th', { class: 'hide-sm' }, 'OU'), h('th', {}, 'Status'))),
+      h('tbody', {}, items.map((u) => {
+        const cb = h('input', { type: 'checkbox', checked: picked.has(u.sam), disabled: u.protected, title: u.protected ? 'Protected account' : 'Select' });
+        cb.addEventListener('click', (e) => e.stopPropagation());
+        cb.addEventListener('change', () => { cb.checked ? picked.add(u.sam) : picked.delete(u.sam); drawBulk(); });
+        return h('tr', {
+          class: `clickable ${selected && u.sam.toLowerCase() === selected.toLowerCase() ? 'selected' : ''}`,
+          onclick: () => { location.hash = `#/users/${encodeURIComponent(u.sam)}`; },
+        },
+        bulkActions.length ? h('td', { class: 'cb' }, cb) : null,
+        h('td', {}, h('div', {}, u.displayName), h('div', { class: 'sub' }, u.sam)),
+        h('td', { class: 'hide-sm' }, h('div', {}, u.title || '—'), h('div', { class: 'sub' }, u.department)),
+        h('td', { class: 'hide-sm' }, h('span', { class: 'sub' }, ouLabel(u.ou))),
+        h('td', {}, h('div', { class: 'badges' }, statusBadges(u),
+          u.locked && can('user.unlock') && h('button', {
+            class: 'btn small',
+            async onclick(e) {
+              e.stopPropagation();
+              e.target.disabled = true;
+              try { actionDone(await api('POST', `/api/users/${encodeURIComponent(u.sam)}/unlock`), `${u.displayName} unlocked`); await load(true); if (selected) renderUserDetail(detailBox, selected, () => load(true)); } catch (ex) { toast(ex.message, 'error'); e.target.disabled = false; }
+            },
+          }, 'Unlock'))));
+      }))));
   }
 
   search.addEventListener('input', debounce(() => load(), 300));
   status.addEventListener('change', () => load());
+  drawBulk();
   await load();
   if (selected) renderUserDetail(detailBox, selected, () => load(true));
+}
+
+// Bulk action dialog: confirm, run on the server, show per-user results
+async function bulkDialog(a, sams, done) {
+  let ouSel = null;
+  if (a.kind === 'move') {
+    let ous;
+    try { ous = (await loadOUs()).userOUs; } catch (e) { toast(e.message, 'error'); return; }
+    ouSel = h('select', {}, ous.map((o) => h('option', { value: o.dn }, ouLabel(o.dn))));
+  }
+  const typed = (a.danger || a.kind === 'move') ? h('input', { type: 'text', autocomplete: 'off', placeholder: String(sams.length) }) : null;
+  const svcBox = h('input', { type: 'checkbox' });
+  const results = h('div', {});
+  return modal({
+    title: `${a.label.replace('…', '')} ${sams.length} user(s)`,
+    wide: true,
+    body: h('div', {},
+      h('p', { style: 'margin-top:0' }, sams.slice(0, 30).join(', '), sams.length > 30 ? ` and ${sams.length - 30} more` : ''),
+      a.kind === 'offboard' && h('p', { class: 'sub' }, 'Each account is disabled, removed from its groups, stamped with today\'s date, its password scrambled' + (state.me.leaverOU ? `, and moved to ${ouLabel(state.me.leaverOU)}.` : '.')),
+      ouSel && h('div', { class: 'field' }, h('label', {}, 'Move to OU'), ouSel),
+      h('label', { class: 'check' }, svcBox, 'Also apply to service accounts in the selection (otherwise they are skipped)'),
+      typed && h('div', { class: 'field' }, h('label', {}, `Type the number of users (${sams.length}) to confirm`), typed),
+      results),
+    actions: [
+      { label: 'Close' },
+      {
+        label: 'Run', kind: a.danger ? 'danger solid' : 'primary',
+        async run(ctx) {
+          if (typed && typed.value.trim() !== String(sams.length)) throw new Error('The number you typed does not match.');
+          const r = await api('POST', '/api/users/bulk', { action: a.kind, sams, ou: ouSel?.value, confirmServiceAccounts: svcBox.checked ? sams : [] });
+          const ok = r.results.filter((x) => x.ok);
+          const pend = ok.filter((x) => x.status === 'pending').length;
+          results.replaceChildren(
+            h('div', { class: ok.length === r.results.length ? 'success-box' : 'error-box' },
+              `${ok.length - pend} done${pend ? `, ${pend} sent for approval` : ''}, ${r.results.length - ok.length} failed.`),
+            h('ul', { class: 'list', style: 'max-height:240px;overflow:auto' }, r.results.map((x) => h('li', {},
+              h('span', { class: `badge ${x.ok ? (x.status === 'pending' ? 'warn' : 'ok') : 'danger'}` }, x.ok ? (x.status === 'pending' ? 'Pending' : 'Done') : 'Failed'),
+              h('span', { class: 'grow' }, x.sam, x.error ? h('span', { class: 'sub' }, ` – ${x.needsConfirm ? 'service account skipped' : x.error}`) : null)))));
+          ctx.setActions([{ label: 'Close', kind: 'primary' }]);
+          done();
+        },
+      },
+    ],
+  });
 }
 
 // ------------------------------------------------------------------ user detail
@@ -522,33 +640,41 @@ async function renderUserDetail(box, sam, refreshList) {
   const reload = async () => { await refreshList(); await renderUserDetail(box, u.sam, refreshList); };
   const enc = encodeURIComponent(u.sam);
   const w = !u.protected;
+  // service-like accounts need the username typed for risky changes (server enforces it too)
+  const svc = u.serviceAccount ? u.sam : undefined;
+  const svcNote = u.serviceAccount ? ' This looks like a service account – changing it can break the applications that use it.' : '';
 
   const actions = [
     w && can('user.resetPassword') && h('button', { class: 'btn primary small', onclick: () => resetPasswordDialog(u, reload) }, 'Reset password'),
     u.locked && can('user.unlock') && h('button', {
       class: 'btn small',
       async onclick() {
-        try { await api('POST', `/api/users/${enc}/unlock`); toast(`${u.displayName} unlocked`, 'success'); reload(); } catch (e) { toast(e.message, 'error'); }
+        try { actionDone(await api('POST', `/api/users/${enc}/unlock`), `${u.displayName} unlocked`); reload(); } catch (e) { toast(e.message, 'error'); }
       },
     }, 'Unlock'),
     w && can('user.enable') && h('button', {
       class: `btn small ${u.enabled ? 'danger' : ''}`,
       onclick: () => (u.enabled
         ? confirmAction({
-          title: 'Disable account', confirmLabel: 'Disable',
-          message: `${u.displayName} (${u.sam}) will not be able to sign in until the account is enabled again.`,
-          run: async () => { await api('POST', `/api/users/${enc}/enabled`, { enabled: false }); toast(`${u.displayName} disabled`, 'success'); reload(); },
+          title: 'Disable account', confirmLabel: 'Disable', typeToConfirm: svc,
+          message: `${u.displayName} (${u.sam}) will not be able to sign in until the account is enabled again.${svcNote}`,
+          run: async () => { actionDone(await api('POST', `/api/users/${enc}/enabled`, { enabled: false, confirmServiceAccount: svc }), `${u.displayName} disabled`); reload(); },
         })
-        : api('POST', `/api/users/${enc}/enabled`, { enabled: true }).then(() => { toast(`${u.displayName} enabled`, 'success'); reload(); }, (e) => toast(e.message, 'error'))),
+        : api('POST', `/api/users/${enc}/enabled`, { enabled: true }).then((r) => { actionDone(r, `${u.displayName} enabled`); reload(); }, (e) => toast(e.message, 'error'))),
     }, u.enabled ? 'Disable' : 'Enable'),
     w && can('user.edit') && h('button', { class: 'btn small', onclick: () => editUserDialog(u, reload) }, 'Edit'),
     w && can('user.move') && h('button', { class: 'btn small', onclick: () => moveUserDialog(u, reload) }, 'Move'),
+    w && can('user.offboard') && h('button', { class: 'btn small danger', onclick: () => offboardDialog(u, reload) }, 'Offboard'),
     w && can('user.delete') && h('button', {
       class: 'btn small danger',
       onclick: () => confirmAction({
         title: 'Delete user', confirmLabel: 'Delete permanently', typeToConfirm: u.sam,
-        message: `This permanently deletes ${u.displayName} from Active Directory, including all group memberships. Consider disabling the account instead.`,
-        run: async () => { await api('DELETE', `/api/users/${enc}`); toast(`${u.displayName} deleted`, 'success'); location.hash = '#/users'; state.users = null; },
+        message: `This permanently deletes ${u.displayName} from Active Directory, including all group memberships. Consider "Offboard" instead, which disables and keeps the account.${svcNote}`,
+        run: async () => {
+          const r = await api('DELETE', `/api/users/${enc}`, { confirmServiceAccount: u.sam });
+          actionDone(r, `${u.displayName} deleted`);
+          if (r.status !== 'pending') { location.hash = '#/users'; state.users = null; }
+        },
       }),
     }, 'Delete'),
   ].filter(Boolean);
@@ -561,7 +687,7 @@ async function renderUserDetail(box, sam, refreshList) {
       class: 'icon-btn', title: `Remove from ${g.name}`,
       onclick: () => confirmAction({
         title: 'Remove from group', confirmLabel: 'Remove', message: `Remove ${u.displayName} from ${g.name}?`,
-        run: async () => { await api('DELETE', `/api/groups/${encodeURIComponent(g.sam)}/members/${enc}`); toast(`Removed from ${g.name}`, 'success'); reload(); },
+        run: async () => { actionDone(await api('DELETE', `/api/groups/${encodeURIComponent(g.sam)}/members/${enc}`), `Removed from ${g.name}`); reload(); },
       }),
     }, '✕')));
 
@@ -575,10 +701,17 @@ async function renderUserDetail(box, sam, refreshList) {
           .map((g) => ({ value: g.sam, label: g.name, sub: g.description || groupTypeLabel(g) }));
       },
       async onPick(it) {
-        try { await api('POST', `/api/groups/${encodeURIComponent(it.value)}/members`, { member: u.sam }); toast(`Added to ${it.label}`, 'success'); reload(); } catch (e) { toast(e.message, 'error'); }
+        try { actionDone(await api('POST', `/api/groups/${encodeURIComponent(it.value)}/members`, { member: u.sam }), `Added to ${it.label}`); reload(); } catch (e) { toast(e.message, 'error'); }
       },
     }));
   }
+
+  const manager = u.managerInfo
+    ? (u.managerInfo.sam ? h('a', { href: `#/users/${encodeURIComponent(u.managerInfo.sam)}` }, u.managerInfo.name) : u.managerInfo.name)
+    : '';
+  const expiry = u.accountExpires
+    ? h('span', {}, fmtDate(u.accountExpires), ' ', new Date(u.accountExpires) <= new Date() ? h('span', { class: 'badge danger' }, 'Expired') : h('span', { class: 'badge warn' }, 'Contractor / temporary'))
+    : 'Never';
 
   box.replaceChildren(h('div', { class: 'card detail' },
     h('div', { class: 'detail-head' },
@@ -589,10 +722,12 @@ async function renderUserDetail(box, sam, refreshList) {
         h('div', { class: 'badges' }, statusBadges(u))),
       h('a', { class: 'btn small ghost close', href: '#/users', title: 'Close' }, '✕')),
     u.protected && h('div', { class: 'notice warn' }, 'This is a privileged/protected account (adminCount=1). It can be viewed and unlocked here; other changes must be made on the domain controller.'),
+    !u.protected && u.serviceAccount && h('div', { class: 'notice info' }, 'Service account: its password never expires or it has a service principal name. Risky changes ask you to type the username to confirm.'),
     actions.length ? h('div', { class: 'actions' }, actions) : null,
     h('div', { class: 'section' }, h('h4', {}, 'Profile'), kv([
       ['First name', u.givenName], ['Last name', u.sn], ['E-mail', u.mail], ['Job title', u.title], ['Department', u.department],
-      ['Company', u.company], ['Office', u.office], ['Phone', u.telephoneNumber], ['Mobile', u.mobile], ['Employee ID', u.employeeID], ['Description', u.description],
+      ['Manager', manager], ['Company', u.company], ['Office', u.office], ['Phone', u.telephoneNumber], ['Mobile', u.mobile],
+      ['Employee ID', u.employeeID], ['Description', u.description],
     ])),
     h('div', { class: 'section' }, h('h4', {}, `Groups (${u.groups.length})`),
       u.groups.length ? h('ul', { class: 'list' }, groupItems) : h('div', { class: 'sub' }, 'Not a member of any group (besides Domain Users).'),
@@ -601,20 +736,42 @@ async function renderUserDetail(box, sam, refreshList) {
       ['Password set', u.mustChangePassword ? 'Must change at next sign-in' : fmtDate(u.passwordLastSet)],
       ['Password expires', u.passwordNeverExpires ? 'Never' : undefined],
       ['Last sign-in', u.lastLogon ? fmtDate(u.lastLogon) : 'Never / unknown'],
-      ['Account expires', u.accountExpires ? fmtDate(u.accountExpires) : 'Never'],
+      ['Account expires', expiry],
       ['Created', fmtDate(u.created)], ['Last changed', fmtDate(u.changed)],
       ['OU', ouLabel(u.ou)],
     ]), h('div', { class: 'mono sub', style: 'margin-top:10px;word-break:break-all' }, u.dn))));
+}
+
+// Toast for actions that may have been sent for approval instead of run
+function actionDone(r, doneMsg) {
+  if (r?.status === 'pending') {
+    toast(`Sent for approval: ${r.summary}`, 'info');
+    if (state.me) state.me.pendingApprovals = (state.me.pendingApprovals || 0);
+  } else toast(doneMsg, 'success');
+}
+
+// Field asking to type the username for service-like accounts
+function serviceConfirmField(u) {
+  if (!u.serviceAccount) return { el: null, value: () => undefined, check: () => true };
+  const input = h('input', { type: 'text', autocomplete: 'off', placeholder: u.sam });
+  return {
+    el: h('div', { class: 'field' }, h('div', { class: 'notice warn inline' }, 'This looks like a service account (password never expires or it has a service principal name). Changing it can break applications.'),
+      h('label', {}, `Type "${u.sam}" to confirm`), input),
+    value: () => input.value.trim(),
+    check: () => input.value.trim().toLowerCase() === u.sam.toLowerCase(),
+  };
 }
 
 function resetPasswordDialog(u, done) {
   const pw = passwordInput('rp-pass');
   const must = h('input', { type: 'checkbox', checked: true });
   const unlock = h('input', { type: 'checkbox', checked: true });
+  const sc = serviceConfirmField(u);
   pw.input.value = generatePassword(); pw.input.type = 'text';
   return modal({
     title: `Reset password · ${u.displayName}`,
     body: h('div', {},
+      sc.el,
       h('div', { class: 'field' }, h('label', { for: 'rp-pass' }, 'New password'), pw.row,
         h('div', { class: 'help' }, 'Must meet the domain password policy. A strong random password has been generated for you.')),
       h('label', { class: 'check' }, must, 'User must change password at next sign-in'),
@@ -624,11 +781,51 @@ function resetPasswordDialog(u, done) {
       {
         label: 'Reset password', kind: 'primary',
         async run(ctx) {
+          if (!sc.check()) throw new Error('Type the username to confirm.');
           const password = pw.input.value;
-          await api('POST', `/api/users/${encodeURIComponent(u.sam)}/reset-password`, { password, mustChange: must.checked, unlock: unlock.checked });
+          await api('POST', `/api/users/${encodeURIComponent(u.sam)}/reset-password`, { password, mustChange: must.checked, unlock: unlock.checked, confirmServiceAccount: sc.value() });
           ctx.close(true);
           done();
           showPasswordResult('Password reset', u.displayName, password, must.checked);
+        },
+      },
+    ],
+  });
+}
+
+function offboardDialog(u, done) {
+  const resetPw = h('input', { type: 'checkbox', checked: true });
+  const typed = h('input', { type: 'text', autocomplete: 'off', placeholder: u.sam });
+  const leaver = state.me.leaverOU;
+  const manageable = u.groups.filter((g) => g.manageable);
+  return modal({
+    title: `Offboard leaver · ${u.displayName}`,
+    body: h('div', {},
+      h('p', { style: 'margin-top:0' }, 'This will:'),
+      h('ul', { class: 'steps-list' },
+        h('li', {}, 'Disable the account'),
+        h('li', {}, `Remove it from ${manageable.length} group(s)`, u.groups.length > manageable.length ? ` (${u.groups.length - manageable.length} protected group(s) stay)` : ''),
+        h('li', {}, 'Stamp the description with today\'s date and your name'),
+        h('li', {}, leaver ? `Move it to ${ouLabel(leaver)}` : 'Leave it in its current OU (set a leavers OU in Settings → Workflow to move it automatically)')),
+      h('label', { class: 'check' }, resetPw, 'Also change the password to a random value nobody knows'),
+      h('p', { class: 'sub' }, 'The account is kept (not deleted), so it can be restored if needed.'),
+      h('div', { class: 'field' }, h('label', {}, `Type "${u.sam}" to confirm`), typed)),
+    actions: [
+      { label: 'Cancel' },
+      {
+        label: 'Offboard', kind: 'danger solid',
+        async run(ctx) {
+          if (typed.value.trim().toLowerCase() !== u.sam.toLowerCase()) throw new Error('The text you typed does not match.');
+          const r = await api('POST', `/api/users/${encodeURIComponent(u.sam)}/offboard`, { resetPassword: resetPw.checked, confirmServiceAccount: u.sam });
+          ctx.close(true);
+          if (r.status === 'pending') { actionDone(r); done(); return; }
+          done();
+          modal({
+            title: `${u.displayName} offboarded`,
+            body: h('div', { class: 'success-box' }, h('ul', { class: 'steps' }, (r.steps || []).map((s) => h('li', {}, '✓ ', s))),
+              r.kept?.length ? h('p', { style: 'margin:8px 0 0;color:var(--warn)' }, `Still a member of: ${r.kept.join(', ')}`) : null),
+            actions: [{ label: 'Done', kind: 'primary' }],
+          });
         },
       },
     ],
@@ -641,15 +838,43 @@ const PROFILE_FIELDS = [
   ['telephoneNumber', 'Phone'], ['mobile', 'Mobile'], ['employeeID', 'Employee ID'], ['description', 'Description'],
 ];
 
+// Manager picker (search-as-you-type) used by Edit and New user
+function managerPicker(current) {
+  let value = current?.sam || '';
+  const label = h('span', { class: 'sub' }, current?.name ? `Current: ${current.name}` : 'No manager set');
+  const clear = h('button', { class: 'btn small', type: 'button', onclick: () => { value = ''; label.textContent = 'No manager set'; } }, 'Clear');
+  const picker = searchSelect({
+    placeholder: 'Search for the manager by name…',
+    minChars: 2,
+    async search(q) {
+      const r = await api('GET', `/api/users?q=${encodeURIComponent(q)}&status=enabled`);
+      return r.items.slice(0, 20).map((x) => ({ value: x.sam, label: x.displayName, sub: `${x.sam}${x.title ? ' · ' + x.title : ''}` }));
+    },
+    onPick(it) { value = it.value; label.textContent = `Selected: ${it.label}`; },
+  });
+  return { el: h('div', {}, picker, h('div', { class: 'input-row', style: 'margin-top:6px;align-items:center' }, label, clear)), value: () => value };
+}
+
+const isoToDate = (iso) => (iso ? new Date(new Date(iso).getTime() - 86400000).toISOString().slice(0, 10) : ''); // last working day
+
 function editUserDialog(u, done) {
   const inputs = {};
   const fields = PROFILE_FIELDS.map(([k, label]) => h('div', { class: 'field' },
     h('label', { for: `eu-${k}` }, label),
     inputs[k] = h('input', { type: k === 'mail' ? 'email' : 'text', id: `eu-${k}`, value: u[k] || '' })));
+  const mgr = managerPicker(u.managerInfo);
+  const origExp = isoToDate(u.accountExpires);
+  const exp = h('input', { type: 'date', id: 'eu-exp', value: origExp });
   return modal({
     title: `Edit · ${u.displayName}`,
     wide: true,
-    body: h('div', { class: 'grid2' }, fields),
+    body: h('div', {},
+      h('div', { class: 'grid2' }, fields),
+      h('div', { class: 'form-section' }, 'Manager & contract'),
+      h('div', { class: 'grid2' },
+        h('div', { class: 'field' }, h('label', {}, 'Manager'), mgr.el),
+        h('div', { class: 'field' }, h('label', { for: 'eu-exp' }, 'Account expires after (last working day)'), exp,
+          h('div', { class: 'help' }, 'Leave empty for permanent staff. The account stops working at midnight after this date.')))),
     actions: [
       { label: 'Cancel' },
       {
@@ -657,6 +882,8 @@ function editUserDialog(u, done) {
         async run(ctx) {
           const body = {};
           for (const [k] of PROFILE_FIELDS) if ((u[k] || '') !== inputs[k].value.trim()) body[k] = inputs[k].value.trim();
+          if ((u.managerInfo?.sam || '') !== mgr.value()) body.manager = mgr.value();
+          if (origExp !== exp.value) body.accountExpires = exp.value;
           if (!Object.keys(body).length) { ctx.close(); return; }
           await api('PATCH', `/api/users/${encodeURIComponent(u.sam)}`, body);
           toast('Changes saved', 'success');
@@ -672,9 +899,11 @@ async function moveUserDialog(u, done) {
   let ous;
   try { ous = (await loadOUs()).userOUs; } catch (e) { toast(e.message, 'error'); return; }
   const sel = h('select', { id: 'mv-ou' }, ous.map((o) => h('option', { value: o.dn, selected: o.dn.toLowerCase() === u.ou.toLowerCase() }, ouLabel(o.dn))));
+  const sc = serviceConfirmField(u);
   return modal({
     title: `Move · ${u.displayName}`,
     body: h('div', {},
+      sc.el,
       h('p', { style: 'margin-top:0' }, `Current OU: ${ouLabel(u.ou)}`),
       h('div', { class: 'field' }, h('label', { for: 'mv-ou' }, 'Move to OU'), sel),
       h('div', { class: 'help' }, 'Group Policies linked to the new OU will apply to this user.')),
@@ -683,8 +912,8 @@ async function moveUserDialog(u, done) {
       {
         label: 'Move', kind: 'primary',
         async run(ctx) {
-          await api('POST', `/api/users/${encodeURIComponent(u.sam)}/move`, { ou: sel.value });
-          toast(`Moved to ${ouLabel(sel.value)}`, 'success');
+          if (!sc.check()) throw new Error('Type the username to confirm.');
+          actionDone(await api('POST', `/api/users/${encodeURIComponent(u.sam)}/move`, { ou: sel.value, confirmServiceAccount: sc.value() }), `Moved to ${ouLabel(sel.value)}`);
           ctx.close(true);
           done();
         },
@@ -727,6 +956,8 @@ async function renderNewUser(view) {
     height: 260,
     alwaysFilter: true,
   });
+  const mgrNew = managerPicker(null);
+  const expNew = h('input', { type: 'date', id: 'nu-exp' });
 
   let samEdited = false, dispEdited = false, mailEdited = false;
   const clean = (s) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -757,7 +988,7 @@ async function renderNewUser(view) {
       e.preventDefault();
       err.hidden = true;
       const body = { ou: ouSel.value, sam: f.sam.value.trim(), password: pw.input.value, upnSuffix: upnSel.value, mustChange: must.checked, enabled: enabled.checked,
-        groups: groupPick.value() };
+        groups: groupPick.value(), manager: mgrNew.value(), accountExpires: expNew.value };
       for (const [k] of PROFILE_FIELDS) body[k] = f[k].value.trim();
       submit.disabled = true; submit.textContent = 'Creating…';
       try {
@@ -786,6 +1017,11 @@ async function renderNewUser(view) {
     inp('mail', 'E-mail', { type: 'email' }), inp('title', 'Job title'), inp('department', 'Department'),
     inp('company', 'Company'), inp('office', 'Office'), inp('employeeID', 'Employee ID'),
     inp('telephoneNumber', 'Phone'), inp('mobile', 'Mobile'), inp('description', 'Description')),
+  h('div', { class: 'form-section' }, 'Manager & contract'),
+  h('div', { class: 'grid2' },
+    h('div', { class: 'field' }, h('label', {}, 'Manager'), mgrNew.el),
+    h('div', { class: 'field' }, h('label', { for: 'nu-exp' }, 'Account expires after (contractors / temporary staff)'), expNew,
+      h('div', { class: 'help' }, 'Leave empty for permanent staff. The account stops working at midnight after this date.'))),
   h('div', { class: 'form-section' }, 'Groups'),
   groupPick.el,
   h('div', { class: 'form-actions' }, h('a', { class: 'btn', href: '#/users' }, 'Cancel'), submit));
@@ -865,7 +1101,7 @@ async function renderGroupDetail(box, sam, refreshList) {
       onclick: () => confirmAction({
         title: 'Delete group', confirmLabel: 'Delete permanently', typeToConfirm: g.sam,
         message: `This permanently deletes the group ${g.name} (${g.members.length} members). Members' accounts are not deleted, but they lose any access granted through this group.`,
-        run: async () => { await api('DELETE', `/api/groups/${enc}`); toast(`${g.name} deleted`, 'success'); state.groups = null; state.allGroups = null; location.hash = '#/groups'; },
+        run: async () => { const r = await api('DELETE', `/api/groups/${enc}`); actionDone(r, `${g.name} deleted`); if (r.status !== 'pending') { state.groups = null; state.allGroups = null; location.hash = '#/groups'; } },
       }),
     }, 'Delete'),
   ].filter(Boolean);
@@ -888,7 +1124,7 @@ async function renderGroupDetail(box, sam, refreshList) {
         return [...us, ...gs];
       },
       async onPick(it) {
-        try { await api('POST', `/api/groups/${enc}/members`, { member: it.value }); toast(`${it.label} added to ${g.name}`, 'success'); reload(); } catch (e) { toast(e.message, 'error'); }
+        try { actionDone(await api('POST', `/api/groups/${enc}/members`, { member: it.value }), `${it.label} added to ${g.name}`); reload(); } catch (e) { toast(e.message, 'error'); }
       },
     }));
   }
@@ -902,7 +1138,7 @@ async function renderGroupDetail(box, sam, refreshList) {
       class: 'icon-btn', title: `Remove ${m.name}`,
       onclick: () => confirmAction({
         title: 'Remove member', confirmLabel: 'Remove', message: `Remove ${m.name} from ${g.name}?`,
-        run: async () => { await api('DELETE', `/api/groups/${enc}/members/${encodeURIComponent(m.sam)}`); toast(`${m.name} removed`, 'success'); reload(); },
+        run: async () => { actionDone(await api('DELETE', `/api/groups/${enc}/members/${encodeURIComponent(m.sam)}`), `${m.name} removed`); reload(); },
       }),
     }, '✕')));
 
@@ -994,6 +1230,349 @@ async function renderNewGroup(view) {
   name.focus();
 }
 
+// ------------------------------------------------------------------ shared: CSV + downloads
+
+function parseCsv(textIn) {
+  const text = textIn.replace(/^﻿/, '');
+  const firstLine = text.split(/\r?\n/, 1)[0] || '';
+  const delim = (firstLine.match(/;/g) || []).length > (firstLine.match(/,/g) || []).length ? ';' : ',';
+  const rows = [];
+  let row = [], cell = '', quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quoted) {
+      if (ch === '"' && text[i + 1] === '"') { cell += '"'; i++; } else if (ch === '"') quoted = false; else cell += ch;
+    } else if (ch === '"') quoted = true;
+    else if (ch === delim) { row.push(cell); cell = ''; }
+    else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && text[i + 1] === '\n') i++;
+      row.push(cell); cell = '';
+      if (row.some((c) => c.trim())) rows.push(row);
+      row = [];
+    } else cell += ch;
+  }
+  row.push(cell);
+  if (row.some((c) => c.trim())) rows.push(row);
+  return rows;
+}
+
+function toCsvText(columns, rows) {
+  const cell = (v) => {
+    let s = v === undefined || v === null ? '' : String(v);
+    if (/^[=+\-@]/.test(s)) s = "'" + s; // no spreadsheet formulas
+    return `"${s.replace(/"/g, '""')}"`;
+  };
+  return '﻿' + [columns.map((c) => cell(c.label)).join(','), ...rows.map((r) => columns.map((c) => cell(typeof c.value === 'function' ? c.value(r) : r[c.key])).join(','))].join('\r\n');
+}
+
+function downloadText(filename, content, type = 'text/csv;charset=utf-8') {
+  const url = URL.createObjectURL(new Blob([content], { type }));
+  const a = h('a', { href: url, download: filename });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+// Username from first/last name using the format chosen in Settings
+function suggestSam(gn, sn) {
+  const clean = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const g = clean(gn), s = clean(sn);
+  switch (state.me?.provisioning?.usernameFormat) {
+    case 'firstlast': return (g + s).slice(0, 20);
+    case 'flast': return ((g[0] || '') + s).slice(0, 20);
+    case 'first.l': return [g, s[0]].filter(Boolean).join('.').slice(0, 20);
+    case 'first': return g.slice(0, 20);
+    case 'manual': return '';
+    default: return [g, s].filter(Boolean).join('.').slice(0, 20);
+  }
+}
+
+// ------------------------------------------------------------------ bulk import
+
+const IMPORT_COLUMNS = {
+  givenName: ['firstname', 'givenname', 'first name', 'first'],
+  sn: ['lastname', 'sn', 'surname', 'last name', 'last'],
+  sam: ['username', 'sam', 'samaccountname', 'login', 'user name', 'userid'],
+  displayName: ['displayname', 'display name', 'fullname', 'full name', 'name'],
+  mail: ['email', 'mail', 'e-mail', 'emailaddress'],
+  title: ['title', 'jobtitle', 'job title', 'designation'],
+  department: ['department', 'dept'],
+  company: ['company'],
+  office: ['office', 'location'],
+  telephoneNumber: ['phone', 'telephone', 'telephonenumber'],
+  mobile: ['mobile', 'cell'],
+  employeeID: ['employeeid', 'employee id', 'empid', 'emp id', 'employee no', 'employeenumber'],
+  description: ['description', 'notes'],
+  ou: ['ou', 'organizationalunit'],
+  groups: ['groups', 'group', 'memberof'],
+  manager: ['manager', 'managerusername', 'manager username'],
+  accountExpires: ['accountexpires', 'expires', 'expiry', 'expirydate', 'enddate', 'end date', 'last working day'],
+};
+
+const normDate = (v) => {
+  const s = String(v || '').trim();
+  if (!s) return '';
+  let y, mo, d;
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (m) [, y, mo, d] = m.map(Number);
+  else if ((m = s.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$/))) [, d, mo, y] = m.map(Number); // DD/MM/YYYY
+  else return 'invalid';
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return 'invalid'; // e.g. month 13, 31 June
+  return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+};
+
+async function renderImport(view) {
+  view.replaceChildren(h('div', { class: 'loading' }, 'Loading…'));
+  let ous, groups;
+  try { [ous, groups] = await Promise.all([loadOUs(), loadAllGroups(true)]); } catch (e) { view.replaceChildren(h('div', { class: 'empty' }, e.message)); return; }
+  const prov = state.me.provisioning || {};
+  const ouSel = h('select', {}, ous.userOUs.map((o) => h('option', { value: o.dn, selected: !!prov.defaultUserOU && o.dn.toLowerCase() === prov.defaultUserOU.toLowerCase() }, ouLabel(o.dn))));
+  const manageable = groups.filter((g) => g.manageable);
+  const gp = pickList({ items: manageable.map((g) => ({ value: g.sam, label: g.name, sub: g.description ? `— ${g.description}` : '' })), selected: (prov.defaultGroups || []), placeholder: 'Search groups…', height: 180, alwaysFilter: true });
+  const must = h('input', { type: 'checkbox', checked: prov.mustChangeDefault !== false });
+  const enabled = h('input', { type: 'checkbox', checked: prov.enabledDefault !== false });
+  const file = h('input', { type: 'file', accept: '.csv,text/csv' });
+  const preview = h('div', {});
+  let rows = [];
+
+  const template = () => downloadText('ad-portal-import-template.csv', toCsvText(
+    ['First name', 'Last name', 'Username', 'E-mail', 'Job title', 'Department', 'Employee ID', 'Mobile', 'Manager', 'Expires', 'Groups', 'OU'].map((l) => ({ label: l })),
+    [{}]).replace(/\r\n""(,"")*$/, ''));
+
+  file.addEventListener('change', async () => {
+    const f = file.files[0];
+    if (!f) return;
+    if (f.size > 2 * 1024 * 1024) { toast('File is too large (max 2 MB)', 'error'); return; }
+    const table = parseCsv(await f.text());
+    if (table.length < 2) { preview.replaceChildren(h('div', { class: 'error-box' }, 'The file needs a header row and at least one user.')); return; }
+    const header = table[0].map((x) => x.trim().toLowerCase().replace(/[_]/g, ' '));
+    const colOf = {};
+    for (const [key, names] of Object.entries(IMPORT_COLUMNS)) {
+      const i = header.findIndex((hd) => names.includes(hd) || names.includes(hd.replace(/\s/g, '')));
+      if (i >= 0) colOf[key] = i;
+    }
+    if (colOf.givenName === undefined && colOf.sn === undefined && colOf.displayName === undefined) {
+      preview.replaceChildren(h('div', { class: 'error-box' }, 'Could not find name columns. Use the template (First name, Last name, …).'));
+      return;
+    }
+    const seen = new Set();
+    rows = table.slice(1, 501).map((r, i) => {
+      const row = {};
+      for (const [key, idx] of Object.entries(colOf)) row[key] = String(r[idx] ?? '').trim();
+      if (!row.sam) row.sam = suggestSam(row.givenName, row.sn);
+      if (!row.mail && prov.emailDomain && row.sam) row.mail = `${row.sam}@${prov.emailDomain}`;
+      if (row.accountExpires) row.accountExpires = normDate(row.accountExpires);
+      const problems = [];
+      if (!row.givenName && !row.sn && !row.displayName) problems.push('no name');
+      if (!/^[A-Za-z0-9._-]{1,20}$/.test(row.sam || '')) problems.push('username missing/invalid');
+      if (seen.has((row.sam || '').toLowerCase())) problems.push('duplicate username in file');
+      seen.add((row.sam || '').toLowerCase());
+      if (row.accountExpires === 'invalid') problems.push('expiry date not understood (use YYYY-MM-DD)');
+      return { line: i + 2, row, problems };
+    });
+    drawPreview(table.length - 1 > 500);
+  });
+
+  function drawPreview(cut) {
+    const okRows = rows.filter((r) => !r.problems.length);
+    const go = h('button', { class: 'btn primary', disabled: !okRows.length }, `Create ${okRows.length} user(s)`);
+    go.addEventListener('click', () => runImport(okRows, go));
+    preview.replaceChildren(
+      h('div', { class: 'card card-pad', style: 'margin-top:14px' },
+        h('div', { class: 'card-title' }, h('span', {}, `Preview – ${rows.length} row(s)`), h('span', {}, okRows.length < rows.length ? h('span', { class: 'badge danger' }, `${rows.length - okRows.length} with problems (will be skipped)`) : h('span', { class: 'badge ok' }, 'All rows look good'))),
+        cut && h('div', { class: 'notice warn inline' }, 'Only the first 500 rows are imported at a time.'),
+        h('div', { class: 'table-wrap', style: 'max-height:380px' }, h('table', {},
+          h('thead', {}, h('tr', {}, ['Line', 'Name', 'Username', 'E-mail', 'Department', 'Manager', 'Expires', 'Groups', 'Check'].map((x) => h('th', {}, x)))),
+          h('tbody', {}, rows.map((r) => h('tr', {},
+            h('td', {}, r.line),
+            h('td', {}, r.row.displayName || `${r.row.givenName || ''} ${r.row.sn || ''}`.trim()),
+            h('td', { class: 'mono' }, r.row.sam),
+            h('td', {}, r.row.mail || ''),
+            h('td', {}, r.row.department || ''),
+            h('td', {}, r.row.manager || ''),
+            h('td', {}, r.row.accountExpires || ''),
+            h('td', {}, r.row.groups || ''),
+            h('td', {}, r.problems.length ? h('span', { class: 'badge danger' }, r.problems.join(', ')) : h('span', { class: 'badge ok' }, 'OK'))))))),
+        h('div', { class: 'form-actions' }, go)));
+  }
+
+  async function runImport(okRows, btn) {
+    btn.disabled = true; btn.textContent = `Creating ${okRows.length} user(s)…`;
+    try {
+      const r = await api('POST', '/api/users/import', {
+        rows: okRows.map((x) => x.row),
+        defaults: { ou: ouSel.value, groups: gp.value(), mustChange: must.checked, enabled: enabled.checked },
+      });
+      state.users = null;
+      const ok = r.results.filter((x) => x.ok);
+      const save = () => downloadText(`new-accounts-${new Date().toISOString().slice(0, 10)}.csv`, toCsvText(
+        [{ label: 'Username', key: 'sam' }, { label: 'Initial password', key: 'password' }, { label: 'Result', value: (x) => (x.ok ? 'created' : `failed: ${x.error}`) }, { label: 'Warnings', value: (x) => (x.warnings || []).join('; ') }],
+        r.results));
+      preview.replaceChildren(h('div', { class: 'card card-pad', style: 'margin-top:14px' },
+        h('div', { class: ok.length === r.results.length ? 'success-box' : 'error-box' }, `${ok.length} created, ${r.results.length - ok.length} failed.`),
+        h('div', { class: 'notice warn inline', style: 'margin-top:12px' }, h('b', {}, 'Download the initial passwords now. '), 'They are shown only once and are not stored anywhere. Hand them over securely and delete the file afterwards.'),
+        h('div', { class: 'input-row', style: 'margin-bottom:12px' }, h('button', { class: 'btn primary', onclick: save }, 'Download passwords (CSV)')),
+        h('div', { class: 'table-wrap', style: 'max-height:380px' }, h('table', {},
+          h('thead', {}, h('tr', {}, h('th', {}, 'Row'), h('th', {}, 'Username'), h('th', {}, 'Result'))),
+          h('tbody', {}, r.results.map((x) => h('tr', {},
+            h('td', {}, x.row), h('td', { class: 'mono' }, x.sam),
+            h('td', {}, x.ok ? h('span', { class: 'badge ok' }, 'Created') : h('span', { class: 'badge danger' }, x.error),
+              (x.warnings || []).length ? h('div', { class: 'sub' }, x.warnings.join('; ')) : null))))))));
+    } catch (e) { toast(e.message, 'error'); btn.disabled = false; btn.textContent = 'Try again'; }
+  }
+
+  view.replaceChildren(
+    h('div', { class: 'page-head' }, h('div', {}, h('h2', {}, 'Import users from CSV'), h('p', { class: 'desc' }, 'Create many accounts at once – e.g. a batch of new joiners from HR.')),
+      h('a', { class: 'btn', href: '#/users' }, 'Back to users')),
+    h('div', { class: 'card card-pad form-card' },
+      h('div', { class: 'form-section' }, '1. Get the file ready'),
+      h('p', { style: 'margin-top:0' }, 'Use one row per person. Required: first and/or last name. Username, e-mail and other columns are optional – a username is suggested from the name using your format (', h('b', {}, state.me.provisioning?.usernameFormat || 'first.last'), '). Separate several groups with ";". Dates as YYYY-MM-DD.'),
+      h('button', { class: 'btn small', onclick: template }, 'Download template'),
+      h('div', { class: 'form-section' }, '2. Defaults for every row'),
+      h('div', { class: 'grid2' },
+        h('div', { class: 'field' }, h('label', {}, 'OU (unless the file has an OU column)'), ouSel),
+        h('div', {}, h('label', { class: 'check' }, must, 'Users must change password at first sign-in'), h('label', { class: 'check' }, enabled, 'Enable the accounts now'))),
+      h('div', { class: 'field' }, h('label', {}, 'Add everyone to these groups'), gp.el),
+      h('div', { class: 'form-section' }, '3. Choose the file'),
+      file),
+    preview);
+}
+
+// ------------------------------------------------------------------ reports
+
+async function renderReports(view) {
+  view.replaceChildren(h('div', { class: 'loading' }, 'Loading…'));
+  let list;
+  try { list = await api('GET', '/api/reports'); } catch (e) { view.replaceChildren(h('div', { class: 'empty' }, e.message)); return; }
+  const sel = h('select', {}, list.map((r) => h('option', { value: r.id }, r.title)), h('option', { value: 'group-members' }, 'Members of a group'));
+  const days = h('input', { type: 'text', inputmode: 'numeric', style: 'width:90px' });
+  const daysWrap = h('label', { class: 'input-row', style: 'align-items:center;gap:6px' }, 'N =', days, 'days');
+  let groupSam = '';
+  const groupWrap = h('div', { style: 'min-width:260px', hidden: true }, searchSelect({
+    placeholder: 'Choose a group…',
+    async search(q) { const gs = await loadAllGroups(); return gs.filter((g) => matchesWords(`${g.sam} ${g.description}`, q)).map((g) => ({ value: g.sam, label: g.name, sub: g.description })); },
+    onPick(it) { groupSam = it.value; groupLabel.textContent = it.label; run(); },
+  }));
+  const groupLabel = h('b', {});
+  const out = h('div', {});
+  let last = null;
+
+  const cols = [
+    { label: 'Username', key: 'sam' }, { label: 'Name', key: 'displayName' }, { label: 'Department', key: 'department' },
+    { label: 'Title', key: 'title' }, { label: 'E-mail', key: 'mail' }, { label: 'Enabled', value: (r) => (r.enabled ? 'yes' : 'no') },
+    { label: 'Last sign-in', value: (r) => (r.lastLogon ? r.lastLogon.slice(0, 10) : 'never') },
+    { label: 'Password set', value: (r) => (r.passwordLastSet ? r.passwordLastSet.slice(0, 10) : '') },
+    { label: 'Expires', value: (r) => (r.accountExpires ? r.accountExpires.slice(0, 10) : '') },
+    { label: 'OU', value: (r) => ouLabel(r.ou) },
+  ];
+  const groupCols = [{ label: 'Username', key: 'sam' }, { label: 'Name', key: 'displayName' }, { label: 'Type', key: 'kind' }, { label: 'Enabled', value: (r) => (r.enabled ? 'yes' : 'no') }];
+
+  function syncControls() {
+    const meta = list.find((r) => r.id === sel.value);
+    daysWrap.hidden = !meta?.days;
+    if (meta?.days && !days.value) days.value = meta.days;
+    groupWrap.hidden = sel.value !== 'group-members';
+  }
+
+  async function run() {
+    syncControls();
+    if (sel.value === 'group-members' && !groupSam) { out.replaceChildren(h('div', { class: 'empty' }, 'Choose a group.')); return; }
+    out.replaceChildren(h('div', { class: 'loading' }, 'Running report…'));
+    try {
+      const q = sel.value === 'group-members' ? `?group=${encodeURIComponent(groupSam)}` : (daysWrap.hidden ? '' : `?days=${encodeURIComponent(days.value)}`);
+      last = await api('GET', `/api/reports/${sel.value}${q}`);
+      const c = sel.value === 'group-members' ? groupCols : cols;
+      out.replaceChildren(h('div', { class: 'card' },
+        h('div', { class: 'card-pad', style: 'display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap' },
+          h('div', {}, h('b', {}, last.title), h('span', { class: 'count' }, `${last.rows.length} account(s)`)),
+          h('button', { class: 'btn', disabled: !last.rows.length, onclick: () => downloadText(`report-${sel.value}-${new Date().toISOString().slice(0, 10)}.csv`, toCsvText(c, last.rows)) }, 'Export CSV (Excel)')),
+        last.rows.length ? h('div', { class: 'table-wrap' }, h('table', {},
+          h('thead', {}, h('tr', {}, c.map((x) => h('th', {}, x.label)))),
+          h('tbody', {}, last.rows.map((r) => h('tr', { class: 'clickable', onclick: () => { if (r.sam && (!r.kind || r.kind === 'user')) location.hash = `#/users/${encodeURIComponent(r.sam)}`; } },
+            c.map((x) => h('td', {}, typeof x.value === 'function' ? x.value(r) : (r[x.key] ?? '')))))))) : h('div', { class: 'empty' }, 'Nothing found – good news.'),
+        h('div', { class: 'card-pad sub' }, 'Last sign-in comes from AD\'s replicated lastLogonTimestamp, which can lag by up to 14 days.')));
+    } catch (e) { out.replaceChildren(h('div', { class: 'error-box' }, e.message)); }
+  }
+
+  sel.addEventListener('change', () => { days.value = ''; run(); });
+  days.addEventListener('change', run);
+  view.replaceChildren(
+    h('div', { class: 'page-head' }, h('div', {}, h('h2', {}, 'Reports'), h('p', { class: 'desc' }, 'Account hygiene and audit reports – export to Excel with one click.'))),
+    h('div', { class: 'toolbar', style: 'align-items:center' }, sel, daysWrap, groupWrap, groupLabel, h('button', { class: 'btn primary', onclick: run }, 'Run')),
+    out);
+  run();
+}
+
+// ------------------------------------------------------------------ approvals
+
+const STATUS_BADGE = { pending: 'warn', approved: 'ok', rejected: 'danger', failed: 'danger', cancelled: 'off', expired: 'off' };
+
+async function renderApprovals(view) {
+  view.replaceChildren(h('div', { class: 'loading' }, 'Loading…'));
+  let list;
+  try { list = await api('GET', '/api/approvals'); } catch (e) { view.replaceChildren(h('div', { class: 'empty' }, e.message)); return; }
+  const me = state.me.sam.toLowerCase();
+  const canApprove = can('approvals.approve');
+  const pending = list.filter((r) => r.status === 'pending');
+  const done = list.filter((r) => r.status !== 'pending');
+  state.me.pendingApprovals = canApprove ? pending.length : 0;
+  document.querySelectorAll('.nav a[data-nav="#/approvals"] .nav-badge').forEach((b) => { b.textContent = String(pending.length); b.hidden = !pending.length; });
+
+  const decideBtn = (r, decision, label, kind) => h('button', {
+    class: `btn small ${kind}`,
+    onclick: () => {
+      const note = h('input', { type: 'text', placeholder: 'Optional note' });
+      modal({
+        title: `${label} request`,
+        body: h('div', {}, h('p', { style: 'margin-top:0' }, h('b', {}, r.summary), h('br'), `Requested by ${r.requestedByName || r.requestedBy} on ${fmtDate(r.createdAt)}`),
+          decision !== 'cancel' && h('div', { class: 'field' }, h('label', {}, 'Note'), note),
+          decision === 'approve' && h('div', { class: 'notice warn inline' }, 'Approving runs the action immediately in Active Directory.')),
+        actions: [{ label: 'Back' }, {
+          label, kind: kind.includes('danger') ? 'danger solid' : 'primary',
+          async run(ctx) {
+            const out = await api('POST', `/api/approvals/${r.id}/${decision}`, { note: note.value });
+            ctx.close(true);
+            toast(decision === 'approve' ? `Approved and done${out.steps ? ': ' + out.steps.join('; ') : ''}` : `Request ${decision === 'reject' ? 'rejected' : 'cancelled'}`, 'success');
+            state.users = null; state.groups = null;
+            renderApprovals(view);
+          },
+        }],
+      });
+    },
+  }, label);
+
+  const row = (r, actions) => h('tr', {},
+    h('td', { class: 'nowrap' }, fmtDate(r.createdAt)),
+    h('td', {}, h('div', {}, r.summary), h('div', { class: 'sub' }, r.action)),
+    h('td', {}, r.requestedByName || r.requestedBy, h('div', { class: 'sub' }, r.requestedBy)),
+    h('td', {}, h('span', { class: `badge ${STATUS_BADGE[r.status] || 'off'}` }, r.status),
+      r.decidedBy ? h('div', { class: 'sub' }, `by ${r.decidedBy}${r.note ? ' – ' + r.note : ''}`) : null,
+      r.result && r.status !== 'approved' ? h('div', { class: 'sub' }, r.result) : null),
+    actions ? h('td', {}, h('div', { class: 'input-row' }, actions)) : null);
+
+  view.replaceChildren(
+    h('div', { class: 'page-head' }, h('div', {}, h('h2', {}, 'Approvals'),
+      h('p', { class: 'desc' }, (state.me.approvalActions || []).length
+        ? 'These actions need a second admin: ' + state.me.approvalActions.map((a) => ACTION_LABELS[a] || a).join(', ') + '. Change this in Settings → Workflow.'
+        : 'No actions currently need approval. Turn this on in Settings → Workflow.')),
+      h('button', { class: 'btn', onclick: () => renderApprovals(view) }, 'Refresh')),
+    h('div', { class: 'card', style: 'margin-bottom:16px' },
+      h('div', { class: 'card-pad card-title' }, `Waiting (${pending.length})`),
+      pending.length ? h('div', { class: 'table-wrap' }, h('table', {},
+        h('thead', {}, h('tr', {}, h('th', {}, 'Requested'), h('th', {}, 'What'), h('th', {}, 'By'), h('th', {}, 'Status'), h('th', {}, ''))),
+        h('tbody', {}, pending.map((r) => row(r, [
+          canApprove && r.requestedBy.toLowerCase() !== me && decideBtn(r, 'approve', 'Approve', 'primary'),
+          canApprove && r.requestedBy.toLowerCase() !== me && decideBtn(r, 'reject', 'Reject', 'danger'),
+          r.requestedBy.toLowerCase() === me && decideBtn(r, 'cancel', 'Cancel', ''),
+          canApprove && r.requestedBy.toLowerCase() === me && h('span', { class: 'sub' }, 'Another admin must approve'),
+        ].filter(Boolean)))))) : h('div', { class: 'empty' }, 'Nothing is waiting for approval.')),
+    h('div', { class: 'card' },
+      h('div', { class: 'card-pad card-title' }, 'History (last 90 days)'),
+      done.length ? h('div', { class: 'table-wrap' }, h('table', {},
+        h('thead', {}, h('tr', {}, h('th', {}, 'Requested'), h('th', {}, 'What'), h('th', {}, 'By'), h('th', {}, 'Outcome'))),
+        h('tbody', {}, done.map((r) => row(r))))) : h('div', { class: 'empty' }, 'No decisions yet.')));
+}
+
 // ------------------------------------------------------------------ audit log
 
 const ACTION_LABELS = {
@@ -1003,6 +1582,10 @@ const ACTION_LABELS = {
   'group.create': 'Created group', 'group.update': 'Edited group', 'group.delete': 'Deleted group',
   'group.addMember': 'Added group member', 'group.removeMember': 'Removed group member', 'audit.export': 'Exported audit log',
   'settings.setup': 'Initial setup', 'settings.update': 'Changed settings', 'settings.test': 'Tested AD connection', 'settings.setupToken': 'Wrong setup token',
+  'user.offboard': 'Offboarded leaver', 'login.mfa': 'Two-step code', 'mfa.enroll': 'Set up two-step sign-in', 'mfa.reset': 'Reset two-step sign-in',
+  'approval.requested': 'Asked for approval', 'approval.approved': 'Approved request', 'approval.rejected': 'Rejected request', 'approval.cancelled': 'Cancelled request',
+  'report.view': 'Ran report', 'audit.verify': 'Verified audit log', 'audit.maintenance': 'Audit log maintenance', 'backup.run': 'Backup',
+  'settings.testEmail': 'Sent test e-mail',
 };
 
 function describe(e) {
@@ -1039,7 +1622,24 @@ async function renderAudit(view) {
 
   view.replaceChildren(
     h('div', { class: 'page-head' }, h('h2', {}, 'Audit log', count),
-      h('button', { class: 'btn', onclick: () => { window.location.href = `/api/audit.csv?${params()}`; } }, 'Export CSV')),
+      h('div', { class: 'input-row' },
+        h('button', {
+          class: 'btn',
+          async onclick(e) {
+            e.target.disabled = true;
+            try {
+              const r = await api('GET', '/api/audit/verify');
+              modal({
+                title: 'Audit log integrity',
+                body: r.ok
+                  ? h('div', { class: 'success-box' }, `✓ Intact. ${r.sealed.toLocaleString()} sealed entries verified – nothing was changed or removed.`, r.unsealed ? h('div', { class: 'sub', style: 'margin-top:6px' }, `${r.unsealed} older entries were written before sealing was switched on and cannot be verified.`) : null)
+                  : h('div', { class: 'error-box' }, h('b', {}, 'Problem found: '), r.problem, h('div', {}, `File ${r.file}, line ${r.line}${r.time ? ` (${fmtDate(r.time)})` : ''}.`)),
+                actions: [{ label: 'Close', kind: 'primary' }],
+              });
+            } catch (ex) { toast(ex.message, 'error'); } finally { e.target.disabled = false; }
+          },
+        }, 'Verify integrity'),
+        h('button', { class: 'btn', onclick: () => { window.location.href = `/api/audit.csv?${params()}`; } }, 'Export CSV'))),
     h('form', { class: 'audit-filters', onsubmit: (e) => { e.preventDefault(); load(); } },
       fld('af-q', 'Search', f.q), fld('af-actor', 'Done by', f.actor), fld('af-action', 'Action', f.action),
       fld('af-result', 'Result', f.result), fld('af-from', 'From', f.from), fld('af-to', 'To', f.to),
@@ -1137,6 +1737,10 @@ async function renderSettingsForm(container, { mode, token, onSaved }) {
     scope: { userOUs: [...(s.scope.userOUs || [])], groupOUs: [...(s.scope.groupOUs || [])] },
     roles: { adminGroup: s.roles.adminGroup || '', helpdeskGroup: s.roles.helpdeskGroup || '', helpdeskPermissions: [...(s.roles.helpdeskPermissions || data.defaultHelpdesk)] },
     provisioning: { ...s.provisioning, upnSuffixes: [...(s.provisioning.upnSuffixes || [])], defaultGroups: [...(s.provisioning.defaultGroups || [])] },
+    security: { ...(s.security || {}), excludedOUs: [...(s.security?.excludedOUs || [])], ipAllowlist: [...(s.security?.ipAllowlist || [])] },
+    notifications: { ...(s.notifications || {}), events: [...(s.notifications?.events || [])] },
+    workflow: { leaverOU: s.workflow?.leaverOU || '', approvalActions: [...(s.workflow?.approvalActions || [])] },
+    backup: { ...(s.backup || {}) },
   };
   let disc = null; // discovery result (OUs, groups, suffixes)
 
@@ -1271,6 +1875,7 @@ async function renderSettingsForm(container, { mode, token, onSaved }) {
   }
 
   function flushPicks() {
+    if (pick.excluded) m.security.excludedOUs = pick.excluded.value();
     if (pick.userOUs) m.scope.userOUs = pick.userOUs.value();
     if (pick.groupOUs) m.scope.groupOUs = pick.groupOUs.value();
     if (pick.admin) m.roles.adminGroup = pick.admin.value();
@@ -1283,6 +1888,7 @@ async function renderSettingsForm(container, { mode, token, onSaved }) {
 
   function drawDynamic() {
     // capture current values before rebuilding
+    if (pick.excluded) m.security.excludedOUs = pick.excluded.value();
     if (pick.userOUs) m.scope.userOUs = pick.userOUs.value();
     if (pick.groupOUs) m.scope.groupOUs = pick.groupOUs.value();
     if (pick.admin) m.roles.adminGroup = pick.admin.value();
@@ -1296,9 +1902,11 @@ async function renderSettingsForm(container, { mode, token, onSaved }) {
     } else {
       pick.userOUs = pickList({ items: ouItems(), selected: m.scope.userOUs, placeholder: 'Filter OUs…', onChange: (v) => { m.scope.userOUs = v; drawDefaults(); } });
       pick.groupOUs = pickList({ items: ouItems(), selected: m.scope.groupOUs, placeholder: 'Filter OUs…', onChange: (v) => { m.scope.groupOUs = v; drawDefaults(); } });
+      pick.excluded = pickList({ items: ouItems().filter((x) => !(disc.baseDn && ndn(x.value) === ndn(disc.baseDn))), selected: m.security.excludedOUs, placeholder: 'Filter OUs…', height: 180, onChange: (v) => { m.security.excludedOUs = v; } });
       sec3.replaceChildren(head(sec3), h('div', { class: 'grid2' },
         fld('User OUs (sub-OUs included)', pick.userOUs.el),
-        fld('Group OUs (sub-OUs included)', pick.groupOUs.el)));
+        fld('Group OUs (sub-OUs included)', pick.groupOUs.el)),
+        fld('Excluded OUs – never managed, even inside the OUs above', pick.excluded.el, 'Use this for service accounts, admin accounts, servers or anything the portal must not touch (e.g. "Administration Accounts").'));
     }
 
     // 4. access
@@ -1366,10 +1974,182 @@ async function renderSettingsForm(container, { mode, token, onSaved }) {
       fld('Groups every new user is added to', pick.defaultGroups.el),
       h('label', { class: 'check' }, mustChg, 'New users must change password at first sign-in'),
       h('label', { class: 'check' }, enabledDef, 'New accounts are enabled immediately'));
+    drawLeaver();
   }
 
-  const sec6 = card('6', 'Security', null,
-    h('div', { class: 'grid3' }, fld('Sign out after inactivity (minutes)', timeout, '5 – 480', 'st-timeout')));
+  // ---- 6. Security
+  const sec = m.security;
+  const numIn = (id, v) => h('input', { type: 'text', id, inputmode: 'numeric', value: String(v ?? '') });
+  const maxFails = numIn('st-maxfail', sec.maxFailuresPerUser ?? 2);
+  const maxHours = numIn('st-maxhours', sec.sessionMaxHours ?? 8);
+  const recheck = numIn('st-recheck', sec.roleRecheckMinutes ?? 5);
+  const requireMfa = h('input', { type: 'checkbox', checked: !!sec.requireMfa });
+  const reauth = h('input', { type: 'checkbox', checked: sec.reauthForSettings !== false });
+  const ipList = h('textarea', { id: 'st-ips', rows: 3, class: 'mono', placeholder: 'One per line, e.g.\n10.0.4.0/24\n192.168.10.25' }, (sec.ipAllowlist || []).join('\n'));
+  const syslogHost = h('input', { type: 'text', id: 'st-syslog', value: sec.syslogHost || '', placeholder: 'siem.company.local (optional)' });
+  const syslogPort = numIn('st-syslogport', sec.syslogPort ?? 514);
+  const syslogProto = h('select', { id: 'st-syslogproto' }, ['udp', 'tcp'].map((p) => h('option', { value: p, selected: (sec.syslogProtocol || 'udp') === p }, p.toUpperCase())));
+  const eventLog = h('input', { type: 'checkbox', checked: !!sec.eventLog });
+  const mfaWarn = h('div', { class: 'notice warn inline', hidden: !!sec.requireMfa || mode === 'setup' }, 'When you save with two-step sign-in switched on, everyone (including you) signs in again and sets up an authenticator app on first sign-in.');
+  requireMfa.addEventListener('change', () => { mfaWarn.hidden = !requireMfa.checked || !!sec.requireMfa; });
+  const mfaListBox = h('div', {});
+  async function drawMfaList() {
+    if (mode === 'setup') return;
+    try {
+      const list = await api('GET', '/api/mfa');
+      mfaListBox.replaceChildren(
+        h('div', { class: 'form-section' }, `Authenticator apps set up (${list.length})`),
+        list.length ? h('ul', { class: 'list mfa-list' }, list.map((x) => h('li', {},
+          h('span', { class: 'grow' }, h('b', {}, x.account), h('span', { class: 'sub' }, ` – since ${fmtDate(x.enrolledAt)}`)),
+          h('button', {
+            class: 'btn small', type: 'button',
+            onclick: () => confirmAction({
+              title: 'Reset two-step sign-in', confirmLabel: 'Reset', danger: true,
+              message: `${x.account} will set up their authenticator app again at next sign-in (e.g. after losing a phone).`,
+              run: async () => { await api('DELETE', `/api/mfa/${encodeURIComponent(x.account)}`); toast('Reset', 'success'); drawMfaList(); },
+            }),
+          }, 'Reset')))) : h('div', { class: 'sub' }, 'Nobody has set up an authenticator app yet.'));
+    } catch { /* not allowed or not configured */ }
+  }
+  const sec6 = card('6', 'Security', 'Sign-in protection, sessions and where audit events are sent.',
+    h('div', { class: 'grid3' },
+      fld('Sign out after inactivity (minutes)', timeout, '5 – 480', 'st-timeout'),
+      fld('Maximum session length (hours)', maxHours, 'Sign in again after this, even if active (1 – 24)', 'st-maxhours'),
+      fld('Re-check group membership every (minutes)', recheck, 'Removed admins lose access within this time', 'st-recheck')),
+    h('div', { class: 'grid3' },
+      fld('Pause an account after failed sign-ins', maxFails, 'Keep this BELOW your AD lockout threshold so the portal can never lock people out', 'st-maxfail'),
+      h('div', { style: 'grid-column: span 2' },
+        h('label', { class: 'check' }, requireMfa, h('span', {}, h('b', {}, 'Require two-step sign-in'), ' (authenticator app code after the password)')),
+        mfaWarn,
+        h('label', { class: 'check' }, reauth, 'Ask for the admin\'s password again before saving Settings'))),
+    fld('Allow access only from these IP addresses / ranges', ipList, 'Leave empty to allow any address. The server itself is always allowed. Saving refuses a list that would lock you out.', 'st-ips'),
+    h('div', { class: 'form-section' }, 'Copy audit events to'),
+    h('div', { class: 'grid3' },
+      fld('Syslog / SIEM server', syslogHost, null, 'st-syslog'),
+      fld('Port', syslogPort, null, 'st-syslogport'),
+      fld('Protocol', syslogProto, null, 'st-syslogproto')),
+    h('label', { class: 'check' }, eventLog, 'Also write audit events to the Windows Application event log (source "ADAdminPortal")'),
+    mfaListBox);
+  drawMfaList();
+
+  // ---- 7. Notifications
+  const nt = m.notifications;
+  const ntEnabled = h('input', { type: 'checkbox', checked: !!nt.enabled });
+  const smtpHost = h('input', { type: 'text', id: 'st-smtp', value: nt.smtpHost || '', placeholder: 'smtp.office365.com / mail.company.local' });
+  const smtpPort = numIn('st-smtpport', nt.smtpPort ?? 587);
+  const smtpSecure = h('input', { type: 'checkbox', checked: !!nt.smtpSecure });
+  const smtpUser = h('input', { type: 'text', id: 'st-smtpuser', value: nt.smtpUser || '', autocomplete: 'off', placeholder: 'optional' });
+  const smtpPass = h('input', { type: 'password', id: 'st-smtppass', autocomplete: 'new-password', placeholder: nt.smtpPasswordSet ? 'Saved – leave blank to keep' : 'optional' });
+  const mailFrom = h('input', { type: 'email', id: 'st-from', value: nt.from || '', placeholder: 'adportal@company.com' });
+  const itMailbox = h('input', { type: 'email', id: 'st-itmail', value: nt.itMailbox || '', placeholder: 'it-team@company.com' });
+  const notifyMgr = h('input', { type: 'checkbox', checked: nt.notifyManager !== false });
+  const EVENTS = [['user.create', 'Account created'], ['user.resetPassword', 'Password reset'], ['user.unlock', 'Account unlocked'], ['user.enable', 'Enabled / disabled'], ['user.offboard', 'Leaver offboarded'], ['user.delete', 'Account deleted'], ['group.addMember', 'Added to group'], ['group.removeMember', 'Removed from group'], ['approval.requested', 'Approval needed']];
+  const evBoxes = EVENTS.map(([k, label]) => ({ k, box: h('input', { type: 'checkbox', checked: nt.events.includes(k) }), label }));
+  const ntFields = () => ({
+    enabled: ntEnabled.checked, smtpHost: smtpHost.value.trim(), smtpPort: Number(smtpPort.value.trim() || 587), smtpSecure: smtpSecure.checked,
+    smtpUser: smtpUser.value.trim(), smtpPassword: smtpPass.value, from: mailFrom.value.trim(), itMailbox: itMailbox.value.trim(),
+    notifyManager: notifyMgr.checked, events: evBoxes.filter((x) => x.box.checked).map((x) => x.k),
+  });
+  const testMail = h('button', {
+    class: 'btn small', type: 'button',
+    async onclick() {
+      testMail.disabled = true;
+      try { await api('POST', '/api/settings/test-email', { notifications: ntFields() }); toast(`Test e-mail sent to ${itMailbox.value}`, 'success'); } catch (e) { toast(e.message, 'error'); } finally { testMail.disabled = false; }
+    },
+  }, 'Send test e-mail');
+  const sec7 = card('7', 'E-mail notifications', 'Tell the IT mailbox (and the user\'s manager) when accounts change. Passwords are never e-mailed.',
+    h('label', { class: 'check' }, ntEnabled, h('b', {}, 'Send notification e-mails')),
+    h('div', { class: 'grid3' },
+      fld('SMTP server', smtpHost, null, 'st-smtp'),
+      fld('Port', smtpPort, '587 = STARTTLS, 465 = TLS, 25 = relay', 'st-smtpport'),
+      h('div', { class: 'field' }, h('label', {}, ' '), h('label', { class: 'check' }, smtpSecure, 'Use TLS from the start (port 465)'))),
+    h('div', { class: 'grid2' },
+      fld('SMTP user', smtpUser, null, 'st-smtpuser'),
+      fld('SMTP password', smtpPass, 'Stored encrypted', 'st-smtppass')),
+    h('div', { class: 'grid2' },
+      fld('From address', mailFrom, null, 'st-from'),
+      fld('IT mailbox (receives every notification)', itMailbox, null, 'st-itmail')),
+    h('label', { class: 'check' }, notifyMgr, 'Also e-mail the user\'s manager (when a manager is set in AD)'),
+    h('div', { class: 'form-section' }, 'Send an e-mail when'),
+    h('div', { class: 'grid3' }, evBoxes.map((x) => h('label', { class: 'check' }, x.box, x.label))),
+    mode === 'setup' ? null : h('div', { class: 'input-row' }, testMail));
+
+  // ---- 8. Workflow
+  const leaverSel = h('select', { id: 'st-leaver' });
+  const APPROVALS = [['user.delete', 'Delete a user'], ['group.delete', 'Delete a group'], ['user.offboard', 'Offboard a leaver'], ['user.move', 'Move a user to another OU'], ['group.addMember', 'Add someone to a group']];
+  const apBoxes = APPROVALS.map(([k, label]) => ({ k, box: h('input', { type: 'checkbox', checked: m.workflow.approvalActions.includes(k) }), label }));
+  function drawLeaver() {
+    if (leaverSel.options.length) m.workflow.leaverOU = leaverSel.value;
+    const ous = (disc?.ous || []).filter((dn) => m.scope.userOUs.some((ou) => under(dn, ou)) && !(disc.baseDn && ndn(dn) === ndn(disc.baseDn)));
+    if (m.workflow.leaverOU && !ous.some((dn) => ndn(dn) === ndn(m.workflow.leaverOU))) ous.unshift(m.workflow.leaverOU);
+    leaverSel.replaceChildren(h('option', { value: '' }, '— Keep in current OU —'),
+      ...ous.map((dn) => h('option', { value: dn, selected: ndn(dn) === ndn(m.workflow.leaverOU) }, ouLabel(dn))));
+  }
+  const sec8 = card('8', 'Workflow', 'Leaver handling and four-eyes approval for risky actions.',
+    h('div', { class: 'grid2' },
+      fld('Leavers OU (Offboard moves accounts here)', leaverSel, 'e.g. "Disabled Users"', 'st-leaver'),
+      h('div', {})),
+    h('div', { class: 'form-section' }, 'Need approval by a second admin'),
+    h('div', { class: 'grid3' }, apBoxes.map((x) => h('label', { class: 'check' }, x.box, x.label))),
+    h('div', { class: 'help' }, 'The request appears under Approvals; a different admin must approve it before it runs.'));
+
+  // ---- 9. Backup
+  const bk = m.backup;
+  const bkEnabled = h('input', { type: 'checkbox', checked: !!bk.enabled });
+  const bkFolder = h('input', { type: 'text', id: 'st-bkfolder', value: bk.folder || '', placeholder: 'D:\\Backups\\ADPortal  or  \\\\fileserver\\backups\\ADPortal' });
+  const bkKeep = numIn('st-bkkeep', bk.keep ?? 14);
+  const bkStatus = h('div', { class: 'sub' });
+  const bkNow = h('button', {
+    class: 'btn small', type: 'button',
+    async onclick() {
+      bkNow.disabled = true;
+      try { const r = await api('POST', '/api/settings/backup'); toast(`Backup saved to ${r.dest}`, 'success'); drawBkStatus(); } catch (e) { toast(e.message, 'error'); } finally { bkNow.disabled = false; }
+    },
+  }, 'Back up now');
+  async function drawBkStatus() {
+    if (mode === 'setup') return;
+    try {
+      const r = await api('GET', '/api/settings/backup');
+      bkStatus.textContent = r.at ? `Last backup: ${fmtDate(r.at)} – ${r.ok ? r.dest : 'FAILED: ' + r.error}` : 'No backup yet.';
+    } catch { /* ignore */ }
+  }
+  const sec9 = card('9', 'Backup', 'Daily copy of the settings and the audit trail.',
+    h('label', { class: 'check' }, bkEnabled, h('b', {}, 'Back up every day')),
+    h('div', { class: 'grid2' },
+      fld('Backup folder (local or network share)', bkFolder, 'The portal\'s service account needs write access to it.', 'st-bkfolder'),
+      fld('Keep the newest', bkKeep, 'backups (older ones are deleted)', 'st-bkkeep')),
+    mode === 'setup' ? null : h('div', { class: 'input-row', style: 'align-items:center' }, bkNow, bkStatus),
+    h('div', { class: 'help' }, 'Note: the encryption key is tied to this server (Windows DPAPI). When restoring on another server, re-enter the service-account password in Settings.'));
+  drawBkStatus();
+
+  const collectExtras = () => {
+    if (pick.excluded) m.security.excludedOUs = pick.excluded.value();
+    drawLeaver();
+    return {
+      security: {
+        maxFailuresPerUser: Number(maxFails.value.trim()), sessionMaxHours: Number(maxHours.value.trim()), roleRecheckMinutes: Number(recheck.value.trim()),
+        requireMfa: requireMfa.checked, reauthForSettings: reauth.checked,
+        ipAllowlist: ipList.value.split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean),
+        excludedOUs: m.security.excludedOUs,
+        syslogHost: syslogHost.value.trim(), syslogPort: Number(syslogPort.value.trim() || 514), syslogProtocol: syslogProto.value, eventLog: eventLog.checked,
+      },
+      notifications: ntFields(),
+      workflow: { leaverOU: m.workflow.leaverOU, approvalActions: apBoxes.filter((x) => x.box.checked).map((x) => x.k) },
+      backup: { enabled: bkEnabled.checked, folder: bkFolder.value.trim(), keep: Number(bkKeep.value.trim() || 14) },
+    };
+  };
+
+  // Ask for the current password before saving (Settings → Security)
+  const askPassword = () => new Promise((resolve) => {
+    const pw = h('input', { type: 'password', autocomplete: 'current-password' });
+    modal({
+      title: 'Confirm it\'s you',
+      body: h('div', {}, h('p', { style: 'margin-top:0' }, `Enter the password for ${state.me.sam} to save the settings.`), h('div', { class: 'field' }, pw)),
+      actions: [{ label: 'Cancel', run: (ctx) => { ctx.close(); resolve(null); } }, { label: 'Save', kind: 'primary', run: (ctx) => { ctx.close(); resolve(pw.value); } }],
+    }).then((v) => { if (v === null) resolve(null); });
+    setTimeout(() => pw.focus(), 50);
+    pw.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); pw.closest('.modal').querySelector('.modal-foot .btn.primary').click(); } });
+  });
 
   // ---- save
   const saveErr = h('div', { class: 'error-box', hidden: true });
@@ -1388,10 +2168,16 @@ async function renderSettingsForm(container, { mode, token, onSaved }) {
       roles: m.roles,
       provisioning: { ...m.provisioning, emailDomain: emailDomain.value.trim(), usernameFormat: fmtSel.value, mustChangeDefault: mustChg.checked, enabledDefault: enabledDef.checked },
       session: { timeoutMinutes: Number(timeout.value.trim()) },
+      ...collectExtras(),
     };
+    let currentPassword;
+    if (mode !== 'setup' && state.me?.reauthForSettings) {
+      currentPassword = await askPassword();
+      if (currentPassword === null) return;
+    }
     saveBtn.disabled = true; saveBtn.textContent = 'Checking & saving…';
     try {
-      const r = await api('POST', '/api/settings', { settings }, hdrs);
+      const r = await api('POST', '/api/settings', { settings, currentPassword }, hdrs);
       onSaved?.(r);
     } catch (e) {
       saveErr.textContent = e.message; saveErr.hidden = false;
@@ -1401,7 +2187,7 @@ async function renderSettingsForm(container, { mode, token, onSaved }) {
   container.replaceChildren(...[
     data.source === 'env' && h('div', { class: 'notice info', style: 'margin:0' }, 'These settings currently come from the .env file. Saving here stores them in data/settings.json, which then takes priority.'),
     data.source === 'demo-draft' && h('div', { class: 'notice warn', style: 'margin:0' }, 'Pre-filled from the settings you entered in demo mode. Review every section (especially the admin and helpdesk groups), then click Finish setup.'),
-    sec1, sec2, sec3, sec4, sec5, sec6,
+    sec1, sec2, sec3, sec4, sec5, sec6, sec7, sec8, sec9,
     h('div', { class: 'save-bar card' }, saveErr, h('div', { class: 'save-row' },
       h('span', { class: 'sub' }, state.mock ? 'Demo mode: organization, permissions and new-user defaults are applied. AD settings are saved for later.' : 'The connection, OUs and groups are verified against AD before saving.'),
       saveBtn)),

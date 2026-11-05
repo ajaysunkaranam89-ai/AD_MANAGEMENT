@@ -51,8 +51,14 @@ try {
 } finally { Pop-Location }
 
 New-Item -ItemType Directory -Force (Join-Path $root 'data'), (Join-Path $root 'logs') | Out-Null
+# Register the Windows Event Log source used by "Copy audit events to the Windows event log"
+& eventcreate /L APPLICATION /SO ADAdminPortal /T INFORMATION /ID 1 /D "AD Admin Portal installed in $root" | Out-Null
 # Only Administrators and SYSTEM may read settings (they contain the encrypted service-account password and key)
-& icacls (Join-Path $root 'data') /inheritance:r /grant:r 'SYSTEM:(OI)(CI)F' 'BUILTIN\Administrators:(OI)(CI)F' | Out-Null
+foreach ($d in 'data', 'logs') {
+  $p = Join-Path $root $d
+  & icacls $p /inheritance:r /grant:r 'SYSTEM:(OI)(CI)F' 'BUILTIN\Administrators:(OI)(CI)F' | Out-Null
+  Get-ChildItem $p -Recurse -Force | ForEach-Object { & icacls $_.FullName /reset | Out-Null } # files inherit the folder ACL
+}
 
 $action = New-ScheduledTaskAction -Execute $node -Argument "`"$root\src\server.js`"" -WorkingDirectory $root
 $trigger = New-ScheduledTaskTrigger -AtStartup

@@ -1,4 +1,4 @@
-﻿// In-memory fake Active Directory for demos and UI testing (npm run mock).
+// In-memory fake Active Directory for demos and UI testing (npm run mock).
 // Same interface as ldap.js. Nothing here touches a real domain.
 import { config } from '../config.js';
 import {
@@ -98,7 +98,13 @@ const byDn = (dn) => [...users.values(), ...groups.values()].find((o) => normDn(
 
 function findUser(sam) {
   const u = users.get(String(sam).toLowerCase());
-  if (!u || !inScope(u.dn, config.userOUs)) throw new AdError(404, `User "${sam}" was not found in the OUs this portal manages.`);
+  if (!u || !managedIn(u.dn, config.userOUs)) throw new AdError(404, `User "${sam}" was not found in the OUs this portal manages.`);
+  return u;
+}
+const managedIn = (dn, ous) => inScope(dn, ous) && !inScope(dn, config.security?.excludedOUs || []);
+function findUserAnywhere(sam) {
+  const u = users.get(String(sam).toLowerCase());
+  if (!u) throw new AdError(404, `User "${sam}" was not found.`);
   return u;
 }
 function findGroup(sam) {
@@ -129,8 +135,9 @@ function shapeGroup(g) {
 }
 function shapeUser(u) {
   const { password, ...rest } = u;
-  return { ...clone(rest), ou: parentDn(u.dn) };
+  return { ...clone(rest), ou: parentDn(u.dn), serviceAccount: !!u.passwordNeverExpires, manager: u.manager || '' };
 }
+const mockExpires = (date) => { const [y, m, d] = date.split('-').map(Number); return new Date(y, m - 1, d + 1).toISOString(); };
 const touch = (o) => { o.changed = now(); };
 
 // ---------------------------------------------------------------- API
@@ -170,7 +177,7 @@ export const directory = {
     await delay();
     const words = (q || '').toLowerCase().split(/\s+/).filter(Boolean);
     const items = [...users.values()]
-      .filter((u) => inScope(u.dn, config.userOUs))
+      .filter((u) => managedIn(u.dn, config.userOUs))
       .filter((u) => words.every((w) => [u.sam, u.displayName, u.mail, u.employeeID, u.givenName, u.sn].some((v) => String(v).toLowerCase().includes(w))))
       .filter((u) => status === 'all' || (status === 'enabled' && u.enabled) || (status === 'disabled' && !u.enabled) || (status === 'locked' && u.locked))
       .map(shapeUser)
@@ -182,6 +189,7 @@ export const directory = {
     await delay();
     const u = findUser(sam);
     const out = shapeUser(u);
+    if (u.manager) { const m = [...users.values()].find((x) => normDn(x.dn) === normDn(u.manager)); out.managerInfo = m ? { sam: m.sam, name: m.displayName, mail: m.mail } : { name: rdnValue(u.manager) }; }
     out.groups = [...groups.values()].filter((g) => [...g.members].some((m) => normDn(m) === normDn(u.dn))).map(shapeGroup)
       .sort((a, b) => a.name.localeCompare(b.name));
     return out;
@@ -200,6 +208,8 @@ export const directory = {
       accountExpires: null, created: now(), changed: now(), protected: false, password: d.password };
     for (const k of Object.keys(USER_FIELDS)) u[k] = d[k] || '';
     u.displayName = cn;
+    if (d.accountExpires) u.accountExpires = mockExpires(d.accountExpires);
+    if (d.manager) u.manager = findUserAnywhere(d.manager).dn;
     users.set(d.sam.toLowerCase(), u);
     const warnings = [];
     for (const gs of d.groups || []) {
@@ -208,10 +218,12 @@ export const directory = {
     return { sam: d.sam, dn, warnings };
   },
 
-  async updateUser(sam, fields) {
+  async updateUser(sam, fields, extra = {}) {
     await delay();
     const u = findUser(sam); writableUser(u);
     const before = {};
+    if (extra.accountExpires !== undefined) { const next = extra.accountExpires ? mockExpires(extra.accountExpires) : null; if (next !== u.accountExpires) { before.accountExpires = u.accountExpires || 'never'; u.accountExpires = next; } }
+    if (extra.manager !== undefined) { const next = extra.manager ? findUserAnywhere(extra.manager).dn : ''; if ((u.manager || '') !== next) { before.manager = u.manager || ''; u.manager = next; } }
     for (const [k, v] of Object.entries(fields)) if ((u[k] || '') !== v) { before[k] = u[k] || ''; u[k] = v; }
     if (Object.keys(before).length) touch(u);
     return { changed: Object.keys(before), before };
@@ -254,7 +266,7 @@ export const directory = {
   async searchGroups(q) {
     await delay();
     const words = (q || '').toLowerCase().split(/\s+/).filter(Boolean);
-    const items = [...groups.values()].filter((g) => inScope(g.dn, config.groupOUs))
+    const items = [...groups.values()].filter((g) => managedIn(g.dn, config.groupOUs))
       .filter((g) => words.every((w) => [g.sam, g.description].some((v) => v.toLowerCase().includes(w))))
       .map(shapeGroup).sort((a, b) => a.name.localeCompare(b.name));
     return { items, total: items.length, truncated: false };

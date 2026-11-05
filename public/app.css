@@ -202,6 +202,17 @@ dl.kv dd { margin: 0; word-break: break-word; }
 .picker .check { margin: 4px 0; }
 .picker .check .sub { color: var(--muted); font-size: 12px; }
 
+/* ---------- v1.1 additions ---------- */
+.nav-badge { margin-left: auto; background: #f0b429; color: #1b2733; font-size: 11px; font-weight: 700; border-radius: 10px; padding: 0 7px; line-height: 18px; }
+.bulk-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; background: var(--accent-soft); border: 1px solid #c8dcf2; border-radius: var(--radius); padding: 8px 12px; margin-bottom: 12px; }
+th.cb, td.cb { width: 34px; padding-right: 0; }
+th.cb input, td.cb input { width: 16px; height: 16px; accent-color: var(--accent); }
+.mfa-enroll p { margin-top: 0; }
+.mfa-qr { display: block; width: 180px; height: 180px; margin: 6px auto 10px; border: 1px solid var(--border); border-radius: 4px; padding: 6px; background: #fff; }
+.steps-list { margin: 0 0 12px; padding-left: 20px; }
+.steps-list li { margin: 3px 0; }
+.mfa-list li { justify-content: space-between; }
+
 /* ---------- search-as-you-type ---------- */
 .ss { position: relative; flex: 1; }
 .ss-list { position: absolute; top: calc(100% + 2px); left: 0; right: 0; z-index: 40; background: #fff; border: 1px solid var(--border-strong);

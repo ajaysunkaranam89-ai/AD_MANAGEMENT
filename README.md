@@ -8,6 +8,49 @@ A web portal for managing Active Directory users and groups from a browser, so I
 
 | Area | What the team can do |
 |---|---|
+| **Dashboard** | Totals for users, enabled, disabled, **locked now** (with Unlock), inactive 90+ days, and groups; recent changes |
+| **Users** | Search (words in any order); filter by enabled / disabled / locked; create (default OU, groups, username format, e-mail, **manager**, **account expiry for contractors**); edit; **reset password**; **unlock**; **enable / disable**; move; **Offboard** (disable, remove groups, scramble password, stamp the date, move to the leavers OU); delete |
+| **Bulk** | Select users, then unlock, enable, disable, move or offboard them all at once. **Import CSV** creates many accounts (preview, validation, generated passwords to download once) |
+| **Groups** | Search; view members; create; edit; delete; add or remove members (search people by name) |
+| **Reports** | Inactive N days, never signed in, old passwords, never-expiring passwords, expiring or expired contractor accounts, disabled, locked, service accounts, privileged accounts, group members. **Export to CSV/Excel** |
+| **Approvals** | Choose actions that need a **second admin** (delete user or group, offboard, move, add to group). Requests wait under Approvals and run only after another admin approves |
+| **Audit log** | Every action, sign-in and failure. Filter and **export CSV**. **Tamper-evident**: entries are hash-chained, and *Verify integrity* shows whether anything was edited or deleted. Optional copy to **syslog/SIEM** and the **Windows Event Log** |
+| **E-mail** | Notify the IT mailbox and the user's manager on create, reset, unlock, disable, offboard, delete, group changes and approval requests. Passwords are never e-mailed |
+| **Settings** (web UI) | Branding; AD connection with auto-discovery; managed and **excluded** OUs; admin and helpdesk groups and permissions; new-user defaults; security; notifications; workflow; daily **backups** |
+
+### Roles
+
+Portal access is controlled by membership of two AD groups that each organisation picks in Settings. Nested membership works.
+
+- **Admin**: everything, including Settings, approvals and the audit log.
+- **Helpdesk**: whatever the admin allows in Settings. The default is view, reset password, unlock, and enable/disable. Helpdesk users can never change a portal admin's account or the portal's access groups.
+
+### Security
+
+- **Least privilege**:
+  - Changes go through a delegated service account, never a Domain Admin.
+  - Only the **managed OUs** are touched; **excluded OUs** never are.
+  - Privileged accounts and groups (`adminCount`, DnsAdmins, Group Policy Creator Owners and others) are always read-only. Unlocking is the one action still allowed on them.
+- **Service accounts**: accounts with an SPN, or enabled accounts whose password never expires, need the username typed before a reset, disable, move, delete or offboard.
+- **Sign-in**:
+  - Domain password, plus optional **two-step sign-in** (TOTP authenticator app; admins can reset a lost phone).
+  - **Per-account pause** before the AD lockout threshold, so the portal can't be used to lock people out.
+  - Optional **IP allow-list**.
+- **Sessions**:
+  - Idle timeout and a **maximum session length**.
+  - Group membership is **re-checked every few minutes**, so removed admins lose access quickly.
+  - Cookie settings: HttpOnly, SameSite=Strict, and Secure on HTTPS.
+- **Settings**:
+  - Changing Settings asks for the admin's **password again**.
+  - Saving is verified against AD and can't lock you out (by group or by IP).
+  - First-time setup needs a one-time **setup token**.
+- **Secrets**:
+  - The service-account and SMTP passwords are encrypted with AES-256-GCM.
+  - On Windows the key is protected by **DPAPI** (machine-bound).
+  - LDAPS with **certificate verification** against your CA.
+- **Transport**: HTTPS (PFX or PEM, TLS 1.2+, optional HTTP→HTTPS redirect); see `setup/New-PortalCertificate.ps1`.
+- **Hardening**: CSRF header check, rate limits, security headers, LDAP-injection-safe escaping, CSV formula-injection protection, and no external scripts or CDNs.
+---|---|
 | **Users** | Search and filter (enabled / disabled / locked); view profile, groups and account status; create users (with default OU, groups, username format and e-mail); edit profile; **reset password** (generator, "must change at next sign-in", unlock); **unlock**; **enable / disable**; move to another OU; delete |
 | **Groups** | Search; view members; create (security or distribution, global / domain local / universal); edit; delete; **add / remove members** |
 | **Audit log** | Filter by text, person, action, result and date; **export to CSV**. Stored as one file per month in `logs/`. Passwords are never logged. |
@@ -113,7 +156,9 @@ Put the portal behind IIS (ARR), nginx or an ingress with a certificate and set 
 |---|---|
 | `data/settings.json` | Settings saved from the wizard, with the service-account password encrypted |
 | `data/.settings-key`, `data/.session-secret` | Auto-generated secrets. Back them up together with `settings.json`. |
-| `logs/audit-YYYY-MM.jsonl` | Audit trail, one JSON line per action |
+| `logs/audit-YYYY-MM.jsonl` | Audit trail, one JSON line per action, hash-chained |
+| `data/approvals.json`, `data/mfa.json` | Approval requests; authenticator enrolments (encrypted) |
+| `data/.settings-key.dpapi` | Settings key protected with Windows DPAPI (this machine only). Set `SETTINGS_KEY` if settings must move between servers |
 
 `.env` is optional and only needed for server options. See [.env.example](.env.example).
 

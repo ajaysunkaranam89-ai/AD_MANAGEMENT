@@ -15,7 +15,11 @@ export const ALL_PERMISSIONS = {
   'group.edit': 'Edit groups',
   'group.delete': 'Delete groups',
   'group.members': 'Add / remove group members',
+  'user.offboard': 'Offboard leavers (disable, remove groups, move)',
+  'user.import': 'Bulk import users from CSV',
+  'reports.read': 'View & export reports',
   'audit.read': 'View & export audit log',
+  'approvals.approve': 'Approve or reject requests',
   'settings.manage': 'Change portal settings',
 };
 
@@ -23,7 +27,7 @@ export const ALL_PERMISSIONS = {
 export const DEFAULT_HELPDESK = ['user.read', 'group.read', 'user.resetPassword', 'user.unlock', 'user.enable'];
 
 // Never grantable to helpdesk (keeps admin-only control of the portal itself).
-export const ADMIN_ONLY = ['settings.manage'];
+export const ADMIN_ONLY = ['settings.manage', 'approvals.approve'];
 
 export function permissionsFor(role) {
   if (role === 'admin') return Object.keys(ALL_PERMISSIONS);
