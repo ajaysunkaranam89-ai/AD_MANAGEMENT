@@ -84,6 +84,10 @@ npm run mock
 
 Open http://localhost:3200 and sign in as `portal.admin` (admin) or `helpdesk`, password `Demo@1234`. The data is fake and lives in memory.
 
+## Documentation
+
+- **[User Guide](docs/USER_GUIDE.md)**: signing in, roles and permissions, and every screen (users, groups, bulk import, offboarding, reports, approvals, audit log, settings), plus troubleshooting.
+
 ## Install for your organisation
 
 ### 1. Prepare Active Directory (once)
@@ -174,5 +178,3 @@ src/ad/mock.js       In-memory demo directory
 public/              Web UI (plain HTML/CSS/JS, no build step)
 setup/               AD delegation script, Windows installer
 ```
-
-© Piersoft

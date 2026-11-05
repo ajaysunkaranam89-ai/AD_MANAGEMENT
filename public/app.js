@@ -374,7 +374,7 @@ function renderShell() {
         state.me.mock && h('div', { class: 'mock-banner' }, 'Demo mode: working on sample data in memory. Nothing here changes your real Active Directory.'),
         h('div', { id: 'view' })),
       h('footer', { class: 'app-foot' },
-        h('span', {}, `© ${new Date().getFullYear()} Piersoft · AD Admin Portal`),
+        h('span', {}, 'AD Admin Portal v1.1'),
         h('span', {}, 'All changes are recorded in the audit log')))));
 }
 
