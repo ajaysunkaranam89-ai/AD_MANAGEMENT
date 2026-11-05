@@ -175,6 +175,12 @@ function shapeGroup(e) {
 
 const USER_CLASS = '(objectCategory=person)(objectClass=user)';
 
+// Search text -> LDAP filter part: each word (max 5) must appear in at least one attribute
+function wordsFilter(q, attrs) {
+  const words = String(q || '').trim().split(/\s+/).filter(Boolean).slice(0, 5);
+  return words.map((w) => `(|${attrs.map((a) => `(${a}=*${escapeFilter(w)}*)`).join('')})`).join('');
+}
+
 async function findUser(c, sam, { anywhere = false } = {}) {
   const f = `(&${USER_CLASS}(sAMAccountName=${escapeFilter(sam)}))`;
   const found = await search(c, config.ldap.baseDn, f, USER_ATTRS);
@@ -264,9 +270,8 @@ export const directory = {
 
   async searchUsers(q, { status = 'all' } = {}) {
     return withService(async (c) => {
-      const e = escapeFilter(q || '');
-      let f = USER_CLASS;
-      if (q) f += `(|(sAMAccountName=*${e}*)(displayName=*${e}*)(mail=*${e}*)(givenName=${e}*)(sn=${e}*)(employeeID=${e}))`;
+      // Every word must match one of the name fields, in any order ("smith john" = "john smith")
+      let f = USER_CLASS + wordsFilter(q, ['sAMAccountName', 'displayName', 'mail', 'givenName', 'sn', 'employeeID', 'userPrincipalName']);
       if (status === 'disabled') f += '(userAccountControl:1.2.840.113556.1.4.803:=2)';
       if (status === 'enabled') f += '(!(userAccountControl:1.2.840.113556.1.4.803:=2))';
       if (status === 'locked') f += '(lockoutTime>=1)'; // candidates; real state checked below
@@ -408,9 +413,7 @@ export const directory = {
 
   async searchGroups(q) {
     return withService(async (c) => {
-      const e = escapeFilter(q || '');
-      let f = '(objectClass=group)';
-      if (q) f += `(|(sAMAccountName=*${e}*)(cn=*${e}*)(description=*${e}*))`;
+      const f = '(objectClass=group)' + wordsFilter(q, ['sAMAccountName', 'cn', 'description']);
       const all = (await searchMany(c, config.groupOUs, `(&${f})`, GROUP_ATTRS)).map(shapeGroup);
       all.sort((a, b) => a.name.localeCompare(b.name));
       return { items: all.slice(0, MAX_RESULTS), total: all.length, truncated: all.length > MAX_RESULTS };

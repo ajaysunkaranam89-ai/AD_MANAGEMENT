@@ -27,6 +27,8 @@
   color: var(--text);
 }
 * { box-sizing: border-box; }
+/* The hidden attribute must win over component display rules (e.g. .check is flex) */
+[hidden] { display: none !important; }
 body { margin: 0; background: var(--bg); }
 button, input, select, textarea { font: inherit; color: inherit; }
 a { color: var(--accent); text-decoration: none; }
@@ -199,6 +201,16 @@ dl.kv dd { margin: 0; word-break: break-word; }
 .picker { border: 1px solid var(--border-strong); border-radius: 4px; max-height: 220px; overflow: auto; padding: 6px 10px; background: #fff; }
 .picker .check { margin: 4px 0; }
 .picker .check .sub { color: var(--muted); font-size: 12px; }
+
+/* ---------- search-as-you-type ---------- */
+.ss { position: relative; flex: 1; }
+.ss-list { position: absolute; top: calc(100% + 2px); left: 0; right: 0; z-index: 40; background: #fff; border: 1px solid var(--border-strong);
+  border-radius: 4px; box-shadow: var(--shadow-lg); max-height: 280px; overflow: auto; }
+.ss-item { padding: 7px 10px; cursor: pointer; border-bottom: 1px solid var(--border); }
+.ss-item:last-child { border-bottom: none; }
+.ss-item .sub { color: var(--muted); font-size: 12px; }
+.ss-item.active, .ss-item:hover { background: var(--accent-soft); }
+.ss-empty { padding: 9px 10px; color: var(--muted); font-size: 13px; }
 
 /* ---------- audit ---------- */
 .audit-filters { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr 1fr 1fr auto; gap: 8px; margin-bottom: 12px; align-items: end;

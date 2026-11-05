@@ -39,6 +39,64 @@ const ouLabel = (dn) => (/^DC=/i.test(String(dn || '')) ? '(domain root)' : Stri
 
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 
+// Words-in-any-order text match used by client-side filters
+const matchesWords = (text, q) => {
+  const t = String(text || '').toLowerCase();
+  return String(q || '').toLowerCase().split(/\s+/).filter(Boolean).every((w) => t.includes(w));
+};
+
+// Search-as-you-type picker with a dropdown of results.
+// search(q) -> Promise<[{ value, label, sub }]>; onPick(item) runs when one is chosen.
+function searchSelect({ placeholder, search, onPick, minChars = 1 }) {
+  const input = h('input', { type: 'search', placeholder, autocomplete: 'off', 'aria-autocomplete': 'list' });
+  const list = h('div', { class: 'ss-list', role: 'listbox', hidden: true });
+  let items = [];
+  let active = -1;
+  let seq = 0;
+  const close = () => { list.hidden = true; active = -1; };
+  const message = (text) => { list.replaceChildren(h('div', { class: 'ss-empty' }, text)); list.hidden = false; };
+  function draw() {
+    if (!items.length) return message('No matches');
+    list.replaceChildren(...items.map((it, i) => h('div', {
+      class: `ss-item ${i === active ? 'active' : ''}`,
+      role: 'option',
+      onmousedown: (e) => { e.preventDefault(); pick(it); },
+    }, h('div', {}, it.label), it.sub ? h('div', { class: 'sub' }, it.sub) : null)));
+    list.hidden = false;
+    list.children[active]?.scrollIntoView({ block: 'nearest' });
+  }
+  async function pick(it) {
+    close();
+    input.value = '';
+    input.disabled = true;
+    try { await onPick(it); } finally { input.disabled = false; }
+  }
+  const run = debounce(async () => {
+    const q = input.value.trim();
+    if (q.length < minChars) { close(); return; }
+    const my = ++seq;
+    message('Searching…');
+    try {
+      const r = await search(q);
+      if (my !== seq) return; // a newer search has started
+      items = r.slice(0, 50);
+      active = items.length ? 0 : -1;
+      draw();
+    } catch (e) { if (my === seq) message(e.message); }
+  }, 250);
+  input.addEventListener('input', run);
+  input.addEventListener('focus', () => { if (input.value.trim()) run(); });
+  input.addEventListener('blur', () => setTimeout(close, 150));
+  input.addEventListener('keydown', (e) => {
+    if (list.hidden || !items.length) return;
+    if (e.key === 'ArrowDown') { active = Math.min(items.length - 1, active + 1); draw(); e.preventDefault(); }
+    else if (e.key === 'ArrowUp') { active = Math.max(0, active - 1); draw(); e.preventDefault(); }
+    else if (e.key === 'Enter') { e.preventDefault(); if (items[active]) pick(items[active]); }
+    else if (e.key === 'Escape') close();
+  });
+  return h('div', { class: 'ss' }, input, list);
+}
+
 // ------------------------------------------------------------------ API
 
 async function api(method, url, body, extraHeaders = {}) {
@@ -407,14 +465,18 @@ async function renderUsers(view, selected) {
       h('button', { class: 'btn', onclick: () => load(true) }, 'Refresh')),
     split);
 
+  let seq = 0;
   async function load(force) {
     const q = { q: search.value.trim(), status: status.value };
     if (force || !state.users || q.q !== state.userQuery.q || q.status !== state.userQuery.status) {
+      const my = ++seq;
       state.userQuery = q;
       listBox.replaceChildren(h('div', { class: 'loading' }, 'Loading users…'));
       try {
-        state.users = await api('GET', `/api/users?q=${encodeURIComponent(q.q)}&status=${q.status}`);
-      } catch (e) { listBox.replaceChildren(h('div', { class: 'empty' }, e.message)); return; }
+        const r = await api('GET', `/api/users?q=${encodeURIComponent(q.q)}&status=${q.status}`);
+        if (my !== seq) return; // a newer search replaced this one
+        state.users = r;
+      } catch (e) { if (my === seq) listBox.replaceChildren(h('div', { class: 'empty' }, e.message)); return; }
     }
     drawList();
   }
@@ -505,17 +567,17 @@ async function renderUserDetail(box, sam, refreshList) {
 
   let addGroup = null;
   if (can('group.members') && w) {
-    const listId = 'dl-groups';
-    const input = h('input', { type: 'text', list: listId, placeholder: 'Add to group…' });
-    const dl = h('datalist', { id: listId });
-    loadAllGroups().then((gs) => dl.replaceChildren(...gs.filter((g) => g.manageable && !u.groups.some((x) => x.sam === g.sam)).map((g) => h('option', { value: g.sam }, g.description)))).catch(() => {});
-    const add = async () => {
-      const name = input.value.trim();
-      if (!name) return;
-      try { await api('POST', `/api/groups/${encodeURIComponent(name)}/members`, { member: u.sam }); toast(`Added to ${name}`, 'success'); reload(); } catch (e) { toast(e.message, 'error'); }
-    };
-    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') add(); });
-    addGroup = h('div', { class: 'input-row', style: 'margin-top:10px' }, input, dl, h('button', { class: 'btn small', onclick: add }, 'Add'));
+    addGroup = h('div', { style: 'margin-top:10px' }, searchSelect({
+      placeholder: 'Add to group – type a group name…',
+      async search(q) {
+        const gs = await loadAllGroups();
+        return gs.filter((g) => g.manageable && !u.groups.some((x) => x.sam === g.sam) && matchesWords(`${g.sam} ${g.name} ${g.description}`, q))
+          .map((g) => ({ value: g.sam, label: g.name, sub: g.description || groupTypeLabel(g) }));
+      },
+      async onPick(it) {
+        try { await api('POST', `/api/groups/${encodeURIComponent(it.value)}/members`, { member: u.sam }); toast(`Added to ${it.label}`, 'success'); reload(); } catch (e) { toast(e.message, 'error'); }
+      },
+    }));
   }
 
   box.replaceChildren(h('div', { class: 'card detail' },
@@ -655,16 +717,15 @@ async function renderNewUser(view) {
   const err = h('div', { class: 'error-box', hidden: true });
   const upnPreview = h('div', { class: 'help' });
 
-  const gFilter = h('input', { type: 'search', placeholder: 'Filter groups…', style: 'margin-bottom:6px' });
   const manageable = groups.filter((g) => g.manageable);
-  const defGroups = (prov.defaultGroups || []).map((x) => x.toLowerCase());
-  const gChecks = manageable.map((g) => ({ g, box: h('input', { type: 'checkbox', value: g.sam, checked: defGroups.includes(g.sam.toLowerCase()) }) }));
-  const picker = h('div', { class: 'picker' }, gChecks.map(({ g, box }) => h('label', { class: 'check', 'data-name': `${g.sam} ${g.description}`.toLowerCase() },
-    box, h('span', {}, g.name, ' ', h('span', { class: 'sub' }, g.description ? `— ${g.description}` : '')))));
-  if (!manageable.length) picker.append(h('div', { class: 'sub' }, 'No manageable groups.'));
-  gFilter.addEventListener('input', () => {
-    const q = gFilter.value.toLowerCase();
-    picker.querySelectorAll('[data-name]').forEach((el) => { el.hidden = !!q && !el.getAttribute('data-name').includes(q); });
+  const manageableSams = new Set(manageable.map((g) => g.sam.toLowerCase()));
+  const groupPick = pickList({
+    items: manageable.map((g) => ({ value: g.sam, label: g.name, sub: g.description ? `— ${g.description}` : '' })),
+    selected: (prov.defaultGroups || []).filter((x) => manageableSams.has(x.toLowerCase())),
+    placeholder: 'Search groups…',
+    empty: 'No manageable groups.',
+    height: 260,
+    alwaysFilter: true,
   });
 
   let samEdited = false, dispEdited = false, mailEdited = false;
@@ -696,7 +757,7 @@ async function renderNewUser(view) {
       e.preventDefault();
       err.hidden = true;
       const body = { ou: ouSel.value, sam: f.sam.value.trim(), password: pw.input.value, upnSuffix: upnSel.value, mustChange: must.checked, enabled: enabled.checked,
-        groups: gChecks.filter((x) => x.box.checked).map((x) => x.g.sam) };
+        groups: groupPick.value() };
       for (const [k] of PROFILE_FIELDS) body[k] = f[k].value.trim();
       submit.disabled = true; submit.textContent = 'Creating…';
       try {
@@ -726,7 +787,7 @@ async function renderNewUser(view) {
     inp('company', 'Company'), inp('office', 'Office'), inp('employeeID', 'Employee ID'),
     inp('telephoneNumber', 'Phone'), inp('mobile', 'Mobile'), inp('description', 'Description')),
   h('div', { class: 'form-section' }, 'Groups'),
-  gFilter, picker,
+  groupPick.el,
   h('div', { class: 'form-actions' }, h('a', { class: 'btn', href: '#/users' }, 'Cancel'), submit));
 
   f.givenName.addEventListener('input', suggest);
@@ -755,12 +816,18 @@ async function renderGroups(view, selected) {
     h('div', { class: 'toolbar' }, search, h('button', { class: 'btn', onclick: () => load(true) }, 'Refresh')),
     h('div', { class: `split ${selected ? '' : 'no-detail'}` }, listBox, detailBox));
 
+  let seq = 0;
   async function load(force) {
     const q = search.value.trim();
     if (force || !state.groups || q !== state.groupQuery) {
+      const my = ++seq;
       state.groupQuery = q;
       listBox.replaceChildren(h('div', { class: 'loading' }, 'Loading groups…'));
-      try { state.groups = await api('GET', `/api/groups?q=${encodeURIComponent(q)}`); } catch (e) { listBox.replaceChildren(h('div', { class: 'empty' }, e.message)); return; }
+      try {
+        const r = await api('GET', `/api/groups?q=${encodeURIComponent(q)}`);
+        if (my !== seq) return; // a newer search replaced this one
+        state.groups = r;
+      } catch (e) { if (my === seq) listBox.replaceChildren(h('div', { class: 'empty' }, e.message)); return; }
     }
     const { items, total } = state.groups;
     count.textContent = String(total);
@@ -805,17 +872,25 @@ async function renderGroupDetail(box, sam, refreshList) {
 
   let addMember = null;
   if (w && can('group.members')) {
-    const input = h('input', { type: 'text', list: 'dl-members', placeholder: 'Username or group name…' });
-    const dl = h('datalist', { id: 'dl-members' });
-    api('GET', '/api/users?q=&status=enabled').then((r) => dl.replaceChildren(
-      ...r.items.filter((u) => !g.members.some((m) => m.sam === u.sam)).map((u) => h('option', { value: u.sam }, u.displayName)))).catch(() => {});
-    const add = async () => {
-      const name = input.value.trim();
-      if (!name) return;
-      try { await api('POST', `/api/groups/${enc}/members`, { member: name }); toast(`${name} added to ${g.name}`, 'success'); reload(); } catch (e) { toast(e.message, 'error'); }
-    };
-    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') add(); });
-    addMember = h('div', { class: 'input-row', style: 'margin-bottom:10px' }, input, dl, h('button', { class: 'btn small primary', onclick: add }, 'Add member'));
+    const isMember = (sam) => g.members.some((m) => String(m.sam).toLowerCase() === String(sam).toLowerCase());
+    addMember = h('div', { style: 'margin-bottom:10px' }, searchSelect({
+      placeholder: 'Add member – type a name, username or group…',
+      minChars: 2,
+      async search(q) {
+        const [users, groups] = await Promise.all([
+          api('GET', `/api/users?q=${encodeURIComponent(q)}&status=all`),
+          api('GET', `/api/groups?q=${encodeURIComponent(q)}`),
+        ]);
+        const us = users.items.filter((x) => !isMember(x.sam)).slice(0, 30)
+          .map((x) => ({ value: x.sam, label: x.displayName, sub: `${x.sam} · user${x.enabled ? '' : ' · disabled'}${x.department ? ' · ' + x.department : ''}` }));
+        const gs = groups.items.filter((x) => x.sam !== g.sam && !isMember(x.sam)).slice(0, 15)
+          .map((x) => ({ value: x.sam, label: x.name, sub: 'group' + (x.description ? ' · ' + x.description : '') }));
+        return [...us, ...gs];
+      },
+      async onPick(it) {
+        try { await api('POST', `/api/groups/${enc}/members`, { member: it.value }); toast(`${it.label} added to ${g.name}`, 'success'); reload(); } catch (e) { toast(e.message, 'error'); }
+      },
+    }));
   }
 
   const members = g.members.map((m) => h('li', {},
@@ -1002,33 +1077,43 @@ const ndn = (dn) => String(dn || '').toLowerCase().replace(/\s*,\s*/g, ',');
 const under = (dn, ou) => ndn(dn) === ndn(ou) || ndn(dn).endsWith(',' + ndn(ou));
 
 // Filterable checkbox / radio list
-function pickList({ items, multiple = true, selected = [], allowNone = false, placeholder = 'Filter…', empty = 'Nothing to show', height = 220, missing = '(saved – not found)', onChange }) {
+function pickList({ items, multiple = true, selected = [], allowNone = false, placeholder = 'Filter…', empty = 'Nothing to show', height = 220, missing = '(saved – not found)', alwaysFilter = false, onChange }) {
   const list = [...items];
   for (const v of selected) {
     if (v && !list.some((i) => ndn(i.value) === ndn(v))) list.unshift({ value: v, label: ouLabel(v) || v, sub: missing });
   }
-  if (allowNone) list.unshift({ value: '', label: '— None —' });
   const sel = new Set(selected.map(ndn));
+  // currently selected entries first, so they are visible without scrolling
+  list.sort((a, b) => (sel.has(ndn(b.value)) ? 1 : 0) - (sel.has(ndn(a.value)) ? 1 : 0));
+  if (allowNone) list.unshift({ value: '', label: '— None —' });
   const name = 'pl' + Math.random().toString(36).slice(2);
   const filter = h('input', { type: 'search', placeholder, style: 'margin-bottom:6px' });
   const box = h('div', { class: 'picker', style: `max-height:${height}px` });
   const rows = list.map((it) => {
     const inp = h('input', { type: multiple ? 'checkbox' : 'radio', name, checked: it.value ? sel.has(ndn(it.value)) : (allowNone && !selected.some(Boolean)) });
     inp.addEventListener('change', () => onChange?.(value()));
-    const row = h('label', { class: 'check', 'data-k': `${it.label} ${it.sub || ''} ${it.value}`.toLowerCase() },
+    const row = h('label', { class: 'check', 'data-k': `${it.label} ${it.sub || ''}`.toLowerCase() },
       inp, h('span', {}, it.label, it.sub ? h('span', { class: 'sub' }, ' ', it.sub) : null));
     return { it, inp, row };
   });
   box.append(...rows.map((r) => r.row));
   if (!rows.length) box.append(h('div', { class: 'sub' }, empty));
+  const noMatch = h('div', { class: 'sub', hidden: true }, 'No matches.');
+  box.append(noMatch);
   filter.addEventListener('input', () => {
-    const q = filter.value.toLowerCase();
-    rows.forEach((r) => { r.row.hidden = !!q && !r.row.getAttribute('data-k').includes(q); });
+    const q = filter.value.trim();
+    let matched = 0;
+    rows.forEach((r) => {
+      const hit = !!r.it.value && matchesWords(r.row.getAttribute('data-k'), q);
+      if (hit) matched++;
+      r.row.hidden = !(!q || hit || !r.it.value || r.inp.checked); // keep None + current choices visible
+    });
+    noMatch.hidden = !q || matched > 0;
   });
   function value() {
     return multiple ? rows.filter((r) => r.inp.checked).map((r) => r.it.value) : (rows.find((r) => r.inp.checked)?.it.value || '');
   }
-  return { el: h('div', {}, list.length > 8 ? filter : null, box), value };
+  return { el: h('div', {}, (alwaysFilter || list.length > 8) ? filter : null, box), value };
 }
 
 function readFile(file, as) {

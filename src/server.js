@@ -66,7 +66,17 @@ app.use('/api', (req, res, next) => {
   next();
 });
 
-app.use(express.static(path.join(__dirname, '..', 'public'), { index: 'index.html' }));
+// Serve index.html with versioned asset links so browsers always load the
+// current app.js / app.css after an update (no stale UI from the cache).
+const PUBLIC_DIR = path.join(__dirname, '..', 'public');
+function sendIndex(req, res) {
+  const v = ['app.js', 'app.css'].map((f) => fs.statSync(path.join(PUBLIC_DIR, f)).mtimeMs.toString(36)).join('');
+  const html = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8').replace(/(app\.(?:css|js))"/g, `$1?v=${v}"`);
+  res.set('Cache-Control', 'no-cache');
+  res.type('html').send(html);
+}
+app.get(['/', '/index.html'], sendIndex);
+app.use(express.static(PUBLIC_DIR, { index: false }));
 
 // ------------------------------------------------------------------ helpers
 

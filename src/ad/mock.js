@@ -168,10 +168,10 @@ export const directory = {
 
   async searchUsers(q, { status = 'all' } = {}) {
     await delay();
-    const ql = (q || '').toLowerCase();
+    const words = (q || '').toLowerCase().split(/\s+/).filter(Boolean);
     const items = [...users.values()]
       .filter((u) => inScope(u.dn, config.userOUs))
-      .filter((u) => !ql || [u.sam, u.displayName, u.mail, u.employeeID].some((v) => String(v).toLowerCase().includes(ql)))
+      .filter((u) => words.every((w) => [u.sam, u.displayName, u.mail, u.employeeID, u.givenName, u.sn].some((v) => String(v).toLowerCase().includes(w))))
       .filter((u) => status === 'all' || (status === 'enabled' && u.enabled) || (status === 'disabled' && !u.enabled) || (status === 'locked' && u.locked))
       .map(shapeUser)
       .sort((a, b) => a.displayName.localeCompare(b.displayName));
@@ -253,9 +253,9 @@ export const directory = {
 
   async searchGroups(q) {
     await delay();
-    const ql = (q || '').toLowerCase();
+    const words = (q || '').toLowerCase().split(/\s+/).filter(Boolean);
     const items = [...groups.values()].filter((g) => inScope(g.dn, config.groupOUs))
-      .filter((g) => !ql || [g.sam, g.description].some((v) => v.toLowerCase().includes(ql)))
+      .filter((g) => words.every((w) => [g.sam, g.description].some((v) => v.toLowerCase().includes(w))))
       .map(shapeGroup).sort((a, b) => a.name.localeCompare(b.name));
     return { items, total: items.length, truncated: false };
   },

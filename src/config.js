@@ -56,7 +56,8 @@ export const config = {
     enabledDefault: true,
   },
 
-  auditFile: path.resolve(APP_ROOT, process.env.AUDIT_LOG_FILE || './logs/audit.jsonl'),
+  // Demo mode keeps a separate audit trail so test activity never mixes with real records
+  auditFile: path.resolve(APP_ROOT, process.env.AUDIT_LOG_FILE || (MOCK ? './logs/demo/audit.jsonl' : './logs/audit.jsonl')),
 };
 
 // Apply settings saved from the web UI (see settings.js for the schema).
